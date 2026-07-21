@@ -1,0 +1,140 @@
+[SWEEP] agent_cfg['agent']['learning_rate'] = 0.001
+[SWEEP] agent_cfg['agent']['rollouts'] = 48
+[SWEEP] agent_cfg['agent']['learning_epochs'] = 12
+[SWEEP] agent_cfg['agent']['mini_batches'] = 4
+[SWEEP] agent_cfg['agent']['entropy_loss_scale'] = 0
+[SWEEP] agent_cfg['agent']['discount_factor'] = 0.97
+[SWEEP] agent_cfg['agent']['ratio_clip'] = 0.1
+[SWEEP] agent_cfg['agent']['value_loss_scale'] = 2
+[SWEEP] agent_cfg['agent']['lambda'] = 0.9
+[SWEEP] architettura rete (policy+value) = [512, 128, 64]
+[SWEEP] env_cfg.rew_scale_alive = 0.2
+[SWEEP] env_cfg.rew_scale_position_approach = 20
+[SWEEP] env_cfg.reward_exp_beta = 0.2
+[SWEEP] env_cfg.rew_scale_position_prec = 25
+[SWEEP] env_cfg.reward_exp_beta_prec = 8
+[SWEEP] env_cfg.rew_scale_yaw_error = -15
+[SWEEP] env_cfg.rew_scale_yaw_prec = 5
+[SWEEP] env_cfg.reward_exp_beta_yaw_prec = 4
+[SWEEP] env_cfg.rew_scale_action_smoothness = -0.3
+[SWEEP] env_cfg.rew_scale_reg_ang_vel_xy = -0.05
+[SWEEP] env_cfg.rew_scale_reg_ang_vel_wz = -0.005
+[SWEEP] env_cfg.rew_scale_vel_mask_penalty = -4
+[SWEEP] env_cfg.rew_scale_target_reached = 80
+[SWEEP] env_cfg.oob_reward = -50
+[SWEEP] env_cfg.tilt_death_reward = -50
+[SWEEP] env_cfg.target_reach_threshold = 0.1
+[SWEEP] env_cfg.target_reach_yaw_threshold = 0.15
+[SWEEP] env_cfg.target_hold_time_s = 0.8
+[SWEEP] trainer.timesteps = 65000
+[INFO] Creazione ambiente: Template-Project-Favuzzi-Mutasci-PosController-Direct-v0
+
+[36m======================================================================================[0m
+[36m[1m[INFO][IsaacLab]: Logging to file: /tmp/isaaclab/logs/isaaclab_2026-07-17_15-51-27.log[0m
+[36m======================================================================================[0m
+
+[33m15:51:27 [simulation_context.py] WARNING: The `enable_external_forces_every_iteration` parameter in the PhysxCfg is set to False. If you are experiencing noisy velocities, consider enabling this flag. You may need to slightly increase the number of velocity iterations (setting it to 1 or 2 rather than 0), together with this flag, to improve the accuracy of velocity updates.[0m
+[INFO]: Base environment:
+	Environment device    : cuda:0
+	Environment seed      : 3821
+	Physics step-size     : 0.01
+	Rendering step-size   : 0.04
+	Environment step-size : 0.04
+[INFO]: Time taken for scene creation : 3.162805 seconds
+[INFO]: Scene manager:  <class InteractiveScene>
+	Number of environments: 4096
+	Environment spacing   : 2.5
+	Source prim name      : /World/envs/env_0
+	Global prim paths     : []
+	Replicate physics     : True
+[INFO]: Starting the simulation. This may take a few seconds. Please wait...
+[INFO]: Time taken for simulation start : 0.710491 seconds
+[INFO]: Completed setting up the environment...
+[pos_env] low-level: input=17, hidden=[128, 128, 64], output=4
+[pos_env] low-level CONGELATO, caricato da /workspace/isaaclab/logs/skrl/vel_controller/2026-07-09_16-01-03_ppo_torch/checkpoints/best_agent.pt
+[pos_env] Leaky integrator: tau=5.0s, alpha=0.9920 per step (decadimento a 1/e in 5.0s, clamp=1.0, obs_scale=0.5)
+[pos_env] step_dt=0.0400s (25.0Hz HL) | low-level a 50.0Hz | episodio=750 step (30s)
+[pos_env] coda: n_waypoints=4, preview H=4 (1 feedback + 3 feedforward) | obs=52
+[pos_env] DoF mask: 3 maschere, probs=(0.5, 0.25, 0.25) | spawn margin=0.8, take-off low_prob=0.3 z=(0.12, 0.25)
+[38;20m[skrl:INFO] Environment wrapper: Isaac Lab (single-agent)[0m
+[38;20m[skrl:INFO] Seed: 3821[0m
+==================================================
+Shared model (roles): ['policy', 'value']
+==================================================
+
+class SharedModel(GaussianMixin,DeterministicMixin, Model):
+    def __init__(self, observation_space, action_space, device):
+        Model.__init__(self, observation_space, action_space, device)
+        GaussianMixin.__init__(
+            self,
+            clip_actions=True,
+            clip_log_std=True,
+            min_log_std=-20.0,
+            max_log_std=2.0,
+            reduction="sum",
+            role="policy",
+        )
+        DeterministicMixin.__init__(self, clip_actions=False, role="value")
+
+        self.net_container = nn.Sequential(
+            nn.LazyLinear(out_features=512),
+            nn.ELU(),
+            nn.LazyLinear(out_features=128),
+            nn.ELU(),
+            nn.LazyLinear(out_features=64),
+            nn.ELU(),
+        )
+        self.policy_layer = nn.LazyLinear(out_features=self.num_actions)
+        self.log_std_parameter = nn.Parameter(torch.full(size=(self.num_actions,), fill_value=0.0), requires_grad=True)
+        self.value_layer = nn.LazyLinear(out_features=1)
+
+    def act(self, inputs, role):
+        if role == "policy":
+            return GaussianMixin.act(self, inputs, role)
+        elif role == "value":
+            return DeterministicMixin.act(self, inputs, role)
+
+    def compute(self, inputs, role=""):
+        if role == "policy":
+            states = unflatten_tensorized_space(self.observation_space, inputs.get("states"))
+            taken_actions = unflatten_tensorized_space(self.action_space, inputs.get("taken_actions"))
+            net = self.net_container(states)
+            self._shared_output = net
+            output = self.policy_layer(net)
+            return output, self.log_std_parameter, {}
+        elif role == "value":
+            if self._shared_output is None:
+                states = unflatten_tensorized_space(self.observation_space, inputs.get("states"))
+                taken_actions = unflatten_tensorized_space(self.action_space, inputs.get("taken_actions"))
+                net = self.net_container(states)
+                shared_output = net
+            else:
+                shared_output = self._shared_output
+            self._shared_output = None
+            output = self.value_layer(shared_output)
+            return output, {}
+
+--------------------------------------------------
+[INFO] Avvio training...
+  0%|                                                                                                                                                                                                                                                                                                  | 0/65000 [00:00<?, ?it/s][33m15:51:32 [articulation.py] WARNING: The function 'set_external_force_and_torque' will be deprecated in a future release. Please use 'permanent_wrench_composer.set_forces_and_torques' instead.[0m
+  0%|▏                                                                                                                                                                                                                                                                                      | 48/65000 [00:02<1:16:56, 14.07it/s]
+[pos][reset #50] n_env=26
+  reward   approach=+0.419 prec=+0.024 yaw=-0.416 yaw_prec=+0.006 ang_xy=-0.040 ang_wz=-0.000 vel_mask=-0.004 aggr=-0.025 smooth=-0.067
+  eventi   target_reached=+0.000 oob=-1.603 tilt=+0.000
+  errori   pos_err=6.554m yaw_err=2.629rad dist_fin=2.589m yaw_fin=1.229rad
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=25 (96.2%) time_out=1 min_clearance=0.01m
+  stanza   x=[-2.84,+2.57] y=[-2.26,+2.67] z=[0.10,2.16]
+  modalita variabile=0.69 singolo=0.31 (hover=0.04)
+  DoF mask frac  vx=1.00 vy=0.73 vz=1.00 wz=0.85
+  0%|▍                                                                                                                                                                                                                                                                                      | 98/65000 [00:04<1:15:01, 14.42it/s]
+[pos][reset #100] n_env=28
+  reward   approach=+0.999 prec=+0.024 yaw=-1.269 yaw_prec=+0.005 ang_xy=-0.099 ang_wz=-0.000 vel_mask=-0.012 aggr=-0.060 smooth=-0.167
+  eventi   target_reached=+0.000 oob=-1.548 tilt=+0.000
+  errori   pos_err=5.521m yaw_err=2.330rad dist_fin=2.569m yaw_fin=1.220rad
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=26 (92.9%) time_out=2 min_clearance=0.03m
+  stanza   x=[-2.58,+2.42] y=[-2.43,+2.42] z=[0.10,2.27]
+  modalita variabile=0.71 singolo=0.29 (hover=0.07)
+  DoF mask frac  vx=1.00 vy=0.79 vz=1.00 wz=0.68
+  0%|▌                                                                                                                                                                                                                                                                                       | 118/65000 [00:04<37:18, 28.99it/s]

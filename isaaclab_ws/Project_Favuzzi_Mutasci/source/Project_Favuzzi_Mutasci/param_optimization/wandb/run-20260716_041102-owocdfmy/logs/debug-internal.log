@@ -1,0 +1,18 @@
+{"time":"2026-07-16T04:11:02.566323127Z","level":"INFO","msg":"stream: starting","core version":"0.24.0"}
+{"time":"2026-07-16T04:11:02.884453861Z","level":"INFO","msg":"stream: created new stream","id":"owocdfmy"}
+{"time":"2026-07-16T04:11:02.884479574Z","level":"INFO","msg":"handler: started","stream_id":"owocdfmy"}
+{"time":"2026-07-16T04:11:02.88452853Z","level":"INFO","msg":"stream: started","id":"owocdfmy"}
+{"time":"2026-07-16T04:11:02.884631643Z","level":"INFO","msg":"sender: started","stream_id":"owocdfmy"}
+{"time":"2026-07-16T04:11:02.884634409Z","level":"INFO","msg":"writer: started","stream_id":"owocdfmy"}
+{"time":"2026-07-16T04:11:18.257841252Z","level":"WARN","msg":"tensorboard: no root directory","error":"timed out after 10s"}
+{"time":"2026-07-16T04:11:18.257905536Z","level":"INFO","msg":"tensorboard: tracking new log directory","rootDir":{},"logDir":"LocalOrCloudPath(LocalPath=\"/workspace/project_workspace/Project_Favuzzi_Mutasci/source/Project_Favuzzi_Mutasci/param_optimization/logs/skrl/pos_controller/2026-07-16_04-11-03_ppo_torch_POS_SWEEP_V1/eager-sweep-49\")","namespace":""}
+{"time":"2026-07-16T04:11:18.258225164Z","level":"INFO","msg":"tensorboard: saving file","fileLocation":"/workspace/project_workspace/Project_Favuzzi_Mutasci/source/Project_Favuzzi_Mutasci/param_optimization/logs/skrl/pos_controller/2026-07-16_04-11-03_ppo_torch_POS_SWEEP_V1/eager-sweep-49/events.out.tfevents.1784175068.c3lab-Precision-3680.39468.0","runPath":"logs/skrl/pos_controller/2026-07-16_04-11-03_ppo_torch_POS_SWEEP_V1/eager-sweep-49/events.out.tfevents.1784175068.c3lab-Precision-3680.39468.0"}
+{"time":"2026-07-16T04:11:18.25963593Z","level":"INFO","msg":"flowcontrol: backed up, offloading to disk","recordNumber":282}
+{"time":"2026-07-16T04:11:18.259940482Z","level":"ERROR","msg":"flowcontrol: failed reading after 0 records: transactionlog: bad header: leveldb/record: reader not in first block","chunk":{"InitialOffset":56524,"InitialNumber":282,"Count":7}}
+{"time":"2026-07-16T04:11:18.260302794Z","level":"INFO","msg":"flowcontrol: unblocked","totalOffloaded":7}
+{"time":"2026-07-16T04:25:00.083879274Z","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-07-16T04:25:00.494276706Z","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2026-07-16T04:25:00.496119244Z","level":"INFO","msg":"stream: closing","id":"owocdfmy"}
+{"time":"2026-07-16T04:25:00.496124458Z","level":"INFO","msg":"handler: closed","stream_id":"owocdfmy"}
+{"time":"2026-07-16T04:25:00.496147786Z","level":"INFO","msg":"sender: closed","stream_id":"owocdfmy"}
+{"time":"2026-07-16T04:25:00.496154133Z","level":"INFO","msg":"stream: closed","id":"owocdfmy"}

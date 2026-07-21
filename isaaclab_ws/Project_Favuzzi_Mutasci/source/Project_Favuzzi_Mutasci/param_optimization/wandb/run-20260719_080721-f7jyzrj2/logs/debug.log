@@ -1,0 +1,27 @@
+2026-07-19 08:07:21,727 INFO    MainThread:22756 [wandb_setup.py:_flush():81] Current SDK version is 0.28.1
+2026-07-19 08:07:21,727 INFO    MainThread:22756 [wandb_setup.py:_flush():81] Configure stats pid to 22756
+2026-07-19 08:07:21,727 INFO    MainThread:22756 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-07-19 08:07:21,727 INFO    MainThread:22756 [wandb_init.py:setup_run_log_directory():729] Logging user logs to /workspace/project_workspace/Project_Favuzzi_Mutasci/source/Project_Favuzzi_Mutasci/param_optimization/wandb/run-20260719_080721-f7jyzrj2/logs/debug.log
+2026-07-19 08:07:21,727 INFO    MainThread:22756 [wandb_init.py:setup_run_log_directory():730] Logging internal logs to /workspace/project_workspace/Project_Favuzzi_Mutasci/source/Project_Favuzzi_Mutasci/param_optimization/wandb/run-20260719_080721-f7jyzrj2/logs/debug-internal.log
+2026-07-19 08:07:21,742 INFO    MainThread:22756 [wandb_init.py:init():772] calling init triggers
+2026-07-19 08:07:21,742 INFO    MainThread:22756 [wandb_init.py:init():777] wandb.init called with sweep_config: {'discount_factor': 0.97, 'entropy_loss_scale': 0, 'lambda_': 0.9, 'learning_epochs': 8, 'learning_rate': 0.001, 'max_timesteps': 65000, 'mini_batches': 2, 'oob_reward': -50, 'policy_units_l1': 512, 'policy_units_l2': 256, 'policy_units_l3': 64, 'ratio_clip': 0.3, 'rew_scale_action_smoothness': -0.1, 'rew_scale_alive': 0.2, 'rew_scale_position_approach': 15, 'rew_scale_position_prec': 25, 'rew_scale_reg_ang_vel_wz': -0.005, 'rew_scale_reg_ang_vel_xy': -0.02, 'rew_scale_target_reached': 80, 'rew_scale_vel_mask_penalty': -0.6, 'rew_scale_yaw_error': -8, 'rew_scale_yaw_prec': 5, 'reward_exp_beta': 0.5, 'reward_exp_beta_prec': 8, 'reward_exp_beta_yaw_prec': 4, 'rollouts': 48, 'target_hold_time_s': 1.6, 'target_reach_threshold': 0.1, 'target_reach_yaw_threshold': 0.15, 'tilt_death_reward': -50, 'value_loss_scale': 0.5}
+config: {'_wandb': {}}
+2026-07-19 08:07:21,742 INFO    MainThread:22756 [wandb_init.py:init():820] starting backend
+2026-07-19 08:07:21,742 INFO    MainThread:22756 [wandb_init.py:init():835] sending inform_init request
+2026-07-19 08:07:21,849 INFO    MainThread:22756 [wandb_init.py:init():840] backend started and connected
+2026-07-19 08:07:21,849 INFO    MainThread:22756 [wandb_run.py:_config_callback():1346] config_cb None None {'discount_factor': 0.97, 'entropy_loss_scale': 0, 'lambda_': 0.9, 'learning_epochs': 8, 'learning_rate': 0.001, 'max_timesteps': 65000, 'mini_batches': 2, 'oob_reward': -50, 'policy_units_l1': 512, 'policy_units_l2': 256, 'policy_units_l3': 64, 'ratio_clip': 0.3, 'rew_scale_action_smoothness': -0.1, 'rew_scale_alive': 0.2, 'rew_scale_position_approach': 15, 'rew_scale_position_prec': 25, 'rew_scale_reg_ang_vel_wz': -0.005, 'rew_scale_reg_ang_vel_xy': -0.02, 'rew_scale_target_reached': 80, 'rew_scale_vel_mask_penalty': -0.6, 'rew_scale_yaw_error': -8, 'rew_scale_yaw_prec': 5, 'reward_exp_beta': 0.5, 'reward_exp_beta_prec': 8, 'reward_exp_beta_yaw_prec': 4, 'rollouts': 48, 'target_hold_time_s': 1.6, 'target_reach_threshold': 0.1, 'target_reach_yaw_threshold': 0.15, 'tilt_death_reward': -50, 'value_loss_scale': 0.5}
+2026-07-19 08:07:21,850 INFO    MainThread:22756 [wandb_init.py:init():910] updated telemetry
+2026-07-19 08:07:21,854 INFO    MainThread:22756 [wandb_init.py:init():933] communicating run to backend with 90.0 second timeout
+2026-07-19 08:07:22,392 INFO    MainThread:22756 [wandb_init.py:init():978] starting run threads in backend
+2026-07-19 08:07:22,584 INFO    MainThread:22756 [wandb_run.py:_console_start():2621] atexit reg
+2026-07-19 08:07:22,584 INFO    MainThread:22756 [wandb_run.py:_redirect():2471] redirect: wrap_raw
+2026-07-19 08:07:22,584 INFO    MainThread:22756 [wandb_run.py:_redirect():2540] Wrapping output streams.
+2026-07-19 08:07:22,584 INFO    MainThread:22756 [wandb_run.py:_redirect():2563] Redirects installed.
+2026-07-19 08:07:22,585 INFO    MainThread:22756 [wandb_init.py:init():1016] run started, returning control to user process
+2026-07-19 08:07:22,585 INFO    MainThread:22756 [wandb_run.py:_config_callback():1346] config_cb None None {'seed': 937}
+2026-07-19 08:07:27,948 INFO    MainThread:22756 [wandb_run.py:_tensorboard_callback():1574] tensorboard callback: /workspace/project_workspace/Project_Favuzzi_Mutasci/source/Project_Favuzzi_Mutasci/param_optimization/logs/skrl/pos_controller/2026-07-19_08-07-22_ppo_torch_POS_SWEEP_V2/dark-sweep-64, True
+2026-07-19 08:55:42,912 INFO    MainThread:22756 [wandb_run.py:_finish():2383] finishing run vitt-politecnico-di-bari/drone-pos-tuning/f7jyzrj2
+2026-07-19 08:55:42,913 INFO    MainThread:22756 [wandb_run.py:_atexit_cleanup():2588] got exitcode: 0
+2026-07-19 08:55:42,913 INFO    MainThread:22756 [wandb_run.py:_restore():2570] restore
+2026-07-19 08:55:42,913 INFO    MainThread:22756 [wandb_run.py:_restore():2576] restore done
+2026-07-19 08:55:48,746 INFO    MainThread:22756 [wandb_run.py:_footer_sync_info():3993] logging synced files

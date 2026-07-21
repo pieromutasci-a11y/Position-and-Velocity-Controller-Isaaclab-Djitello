@@ -1,0 +1,191 @@
+# sweep_v1.yaml
+#
+# WandB Bayesian Sweep per il PosController (DoF mask 3D).
+#
+# METRICA OBIETTIVO: Objective/combined_error_smooth
+#   = final_dist + 0.2 * final_yaw_error + 0.3 * smoothness_penalty
+#   (loggata dall'env in extras["Objective/combined_error_smooth"], vedi _reset_idx)
+#   Combina precisione di posizione [m], yaw [rad] e fluidita' dei comandi
+#   in un unico scalare da minimizzare.
+#
+# DURATA TRIAL: max_timesteps = 65_000 (~40 minuti a trial)
+#   Budget totale sweep: ~2.5 giorni => ~90 trial disponibili.
+#   Per questo motivo PPO, architettura e soglie sono rimasti ai valori
+#   originali (gia' testati) e lo spazio di ricerca e' stato concentrato
+#   sui pesi delle penalita' reward, che sono l'obiettivo primario di questo
+#   sweep. Parametri a basso impatto sono stati fissati (value) invece che
+#   sweeppati, per non disperdere budget su dimensioni poco informative.
+#
+# PARAMETRI SWEEPPATI: PPO, architettura, pesi reward principali, soglie waypoint.
+#   FISSATI (value): rew_scale_alive, rew_scale_yaw_prec, reward_exp_beta_yaw_prec,
+#   rew_scale_reg_ang_vel_wz, oob_reward, tilt_death_reward.
+#   NON sweeppati: dof_mask_set / dof_mask_probs (tuple, non scalari),
+#   spawn_low_prob / spawn_low_z_range (non sweeppabili via setattr semplice),
+#   integral_tau_s / integral_clamp / integral_obs_scale (leaky integrator, fissi).
+#
+# NOTA su uniciclo_docking_factor: rimosso dalla nuova versione dell'env
+#   (la logica bearing-then-align e' stata eliminata con le mask 3D).
+
+entity: vitt-politecnico-di-bari
+project: drone-pos-tuning
+program: /workspace/project_workspace/Project_Favuzzi_Mutasci/scripts/skrl/train_manual.py
+name: POS_SWEEP_V2
+method: bayes
+metric:
+  name: "Objective/combined_error_smooth"
+  goal: minimize
+#early_terminate:
+ # type: hyperband
+  #min_iter: 3
+  #eta: 2
+
+parameters:
+
+  # ===================================================================
+  # DURATA DEL TRIAL (fissa per confrontare a parita' di budget)
+  # ===================================================================
+  max_timesteps:
+    value: 65000
+
+  # ===================================================================
+  # PPO HYPERPARAMETERS (invariati)
+  # ===================================================================
+  learning_rate:
+    values: [1e-4, 3e-4, 5e-4, 1e-3]
+
+  rollouts:
+    values: [16, 24, 32, 48]
+
+  learning_epochs:
+    values: [4, 5, 8, 12]
+
+  mini_batches:
+    values: [2, 4, 8]
+
+  entropy_loss_scale:
+    values: [0.0, 0.005, 0.01]
+
+  discount_factor:
+    values: [0.97, 0.99, 0.995]
+
+  lambda_:
+    values: [0.90, 0.95, 0.99]
+
+  ratio_clip:
+    values: [0.1, 0.2, 0.3]
+
+  value_loss_scale:
+    values: [0.5, 1.0, 2.0]
+
+  # ===================================================================
+  # ARCHITETTURA RETE (policy + value, simmetriche) — invariata
+  # ===================================================================
+  policy_units_l1:
+    values: [128, 256, 512]
+
+  policy_units_l2:
+    values: [64, 128, 256]
+
+  policy_units_l3:
+    values: [32, 64, 128]
+
+  # ===================================================================
+  # REWARD — POSIZIONE
+  # ===================================================================
+  rew_scale_position_approach:
+    values: [5.0, 10.0, 15.0, 20.0]
+
+  reward_exp_beta:
+    values: [0.2, 0.5, 1.0, 2.0]
+
+  rew_scale_position_prec:
+    values: [5.0, 10.0, 15.0, 25.0]
+
+  reward_exp_beta_prec:
+    values: [2.0, 3.0, 5.0, 8.0]
+
+  # ===================================================================
+  # REWARD — YAW
+  # ===================================================================
+  rew_scale_yaw_error:
+    values: [-3.0, -5.0, -8.0, -15.0]
+
+  # Precisione fine yaw: basso impatto, fissata per non disperdere budget
+  rew_scale_yaw_prec:
+    value: 5.0
+
+  reward_exp_beta_yaw_prec:
+    value: 4.0
+
+  # ===================================================================
+  # REWARD — REGOLARIZZAZIONE
+  # ===================================================================
+  # Sopravvivenza: basso impatto rispetto a oob/tilt penalty, fissata
+  rew_scale_alive:
+    value: 0.2
+
+  rew_scale_action_smoothness:
+    values: [-0.1, -0.3, -0.5, -1.0]
+
+  rew_scale_reg_ang_vel_xy:
+    values: [-0.02, -0.05, -0.1, -0.2]
+
+  # wz gia' pesato basso apposta per non ostacolare l'uniciclo, fissato
+  rew_scale_reg_ang_vel_wz:
+    value: -0.005
+
+  # ===================================================================
+  # REWARD — PENALITA' ASSI MASCHERATI (DoF mask)
+  # Penalizza vy_b reale in uniciclo [1,0,1,1] e wz reale in
+  # planare_olonomo [1,1,1,0]. Con full e' identicamente zero.
+  # Range ampliato: e' il peso che vogliamo rinforzare in questo sweep.
+  # ===================================================================
+  rew_scale_vel_mask_penalty:
+    values: [-0.3, -0.6, -1.0, -2.0, -4.0, -7.0]
+
+  # ===================================================================
+  # REWARD — EVENTI IMPULSIVI
+  # ===================================================================
+  rew_scale_target_reached:
+    values: [40.0, 60.0, 80.0, 120.0]
+
+  # Impatto basso, fissi come da nota originale
+  oob_reward:
+    value: -50.0
+
+  tilt_death_reward:
+    value: -50.0
+
+  # ===================================================================
+  # SOGLIE AVANZAMENTO WAYPOINT (invariate)
+  # ===================================================================
+  target_reach_threshold:
+    values: [0.10, 0.15, 0.20]
+
+  target_reach_yaw_threshold:
+    values: [0.15, 0.20, 0.30]
+
+  target_hold_time_s:
+    values: [0.8, 1.2, 1.6]
+
+# =======================================================================
+# COMANDO DI LANCIO
+# =======================================================================
+# NOTA: dof_mask_set / dof_mask_probs NON sono qui perche' sono tuple, non
+# scalari. Restano fissi al default in MyDronePosEnvCfg:
+#   dof_mask_set   = ([1,1,1,1], [1,0,1,1], [1,1,1,0])
+#   dof_mask_probs = (0.50, 0.25, 0.25)
+# Se vuoi sweepparli, aggiungili come parametro categorico "dof_mask_profile"
+# con preset ("mostly_full", "balanced", "mostly_constrained") gestito ad hoc
+# in train_manual.py invece che via setattr diretto.
+command:
+  - ${env}
+  - /workspace/isaaclab/_isaac_sim/python.sh
+  - ${program}
+  - ${args}
+  - --task
+  - Template-Project-Favuzzi-Mutasci-PosController-Direct-v0
+  - --headless
+  - --wandb_sweep
+  - --experiment_name
+  - POS_SWEEP_V2

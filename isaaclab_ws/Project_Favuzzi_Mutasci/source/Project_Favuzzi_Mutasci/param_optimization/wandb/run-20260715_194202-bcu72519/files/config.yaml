@@ -1,0 +1,106 @@
+_wandb:
+    value:
+        cli_version: 0.24.0
+        e:
+            ielwgob87hjs6n5i0ihubgbihpbr5tec:
+                cpu_count: 20
+                cpu_count_logical: 28
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "489309364224"
+                        used: "455115890688"
+                email: vittoriofavuzzi35@gmail.com
+                executable: /workspace/isaaclab/_isaac_sim/kit/python/bin/python3
+                gpu: NVIDIA RTX A1000
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 2304
+                      memoryTotal: "8585740288"
+                      name: NVIDIA RTX A1000
+                      uuid: GPU-152819ba-1e5b-e5ac-3fda-5f2b85d8f393
+                host: c3lab-Precision-3680
+                memory:
+                    total: "33321390080"
+                os: Linux-6.8.0-134-generic-x86_64-with-glibc2.39
+                program: /workspace/project_workspace/Project_Favuzzi_Mutasci/scripts/skrl/train_manual.py
+                python: CPython 3.11.13
+                root: /workspace/project_workspace/Project_Favuzzi_Mutasci/source/Project_Favuzzi_Mutasci/param_optimization
+                startedAt: "2026-07-15T19:42:02.717812Z"
+                writerId: ielwgob87hjs6n5i0ihubgbihpbr5tec
+        m: []
+        python_version: 3.11.13
+        t:
+            "1":
+                - 1
+                - 50
+                - 105
+            "2":
+                - 1
+                - 50
+                - 105
+            "3":
+                - 2
+                - 14
+                - 35
+            "4": 3.11.13
+            "5": 0.24.0
+            "12": 0.24.0
+            "13": linux-x86_64
+entropy_loss_scale:
+    value: 0
+learning_epochs:
+    value: 8
+learning_rate:
+    value: 0.0001
+max_timesteps:
+    value: 30000
+mini_batches:
+    value: 8
+oob_reward:
+    value: -80
+policy_units_l1:
+    value: 256
+policy_units_l2:
+    value: 64
+policy_units_l3:
+    value: 64
+rew_scale_action_smoothness:
+    value: -0.5
+rew_scale_alive:
+    value: 0.1
+rew_scale_position_approach:
+    value: 5
+rew_scale_position_prec:
+    value: 25
+rew_scale_reg_ang_vel:
+    value: -0.02
+rew_scale_target_reached:
+    value: 40
+rew_scale_vel_mask_penalty:
+    value: -1
+rew_scale_yaw_error:
+    value: -5
+rew_scale_yaw_prec:
+    value: 2
+reward_exp_beta:
+    value: 1
+reward_exp_beta_prec:
+    value: 3
+reward_exp_beta_yaw_prec:
+    value: 6
+rollouts:
+    value: 32
+seed:
+    value: 3892
+target_hold_time_s:
+    value: 1.6
+target_reach_threshold:
+    value: 0.2
+target_reach_yaw_threshold:
+    value: 0.15
+tilt_death_reward:
+    value: -80
+uniciclo_docking_factor:
+    value: 3

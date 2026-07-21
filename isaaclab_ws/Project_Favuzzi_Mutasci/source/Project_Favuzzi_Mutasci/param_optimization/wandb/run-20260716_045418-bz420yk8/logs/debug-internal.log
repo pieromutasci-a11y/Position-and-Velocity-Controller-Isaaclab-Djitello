@@ -1,0 +1,19 @@
+{"time":"2026-07-16T04:54:18.447722143Z","level":"INFO","msg":"stream: starting","core version":"0.24.0"}
+{"time":"2026-07-16T04:54:18.769049764Z","level":"INFO","msg":"stream: created new stream","id":"bz420yk8"}
+{"time":"2026-07-16T04:54:18.769085144Z","level":"INFO","msg":"handler: started","stream_id":"bz420yk8"}
+{"time":"2026-07-16T04:54:18.769106878Z","level":"INFO","msg":"stream: started","id":"bz420yk8"}
+{"time":"2026-07-16T04:54:18.769124339Z","level":"INFO","msg":"writer: started","stream_id":"bz420yk8"}
+{"time":"2026-07-16T04:54:18.769134632Z","level":"INFO","msg":"sender: started","stream_id":"bz420yk8"}
+{"time":"2026-07-16T04:54:34.145976001Z","level":"WARN","msg":"tensorboard: no root directory","error":"timed out after 10s"}
+{"time":"2026-07-16T04:54:34.1460225Z","level":"INFO","msg":"tensorboard: tracking new log directory","rootDir":{},"logDir":"LocalOrCloudPath(LocalPath=\"/workspace/project_workspace/Project_Favuzzi_Mutasci/source/Project_Favuzzi_Mutasci/param_optimization/logs/skrl/pos_controller/2026-07-16_04-54-19_ppo_torch_POS_SWEEP_V1/deep-sweep-52\")","namespace":""}
+{"time":"2026-07-16T04:54:34.146144084Z","level":"INFO","msg":"tensorboard: saving file","fileLocation":"/workspace/project_workspace/Project_Favuzzi_Mutasci/source/Project_Favuzzi_Mutasci/param_optimization/logs/skrl/pos_controller/2026-07-16_04-54-19_ppo_torch_POS_SWEEP_V1/deep-sweep-52/events.out.tfevents.1784177664.c3lab-Precision-3680.40518.0","runPath":"logs/skrl/pos_controller/2026-07-16_04-54-19_ppo_torch_POS_SWEEP_V1/deep-sweep-52/events.out.tfevents.1784177664.c3lab-Precision-3680.40518.0"}
+{"time":"2026-07-16T04:54:34.146649124Z","level":"INFO","msg":"flowcontrol: backed up, offloading to disk","recordNumber":234}
+{"time":"2026-07-16T04:54:34.146774822Z","level":"ERROR","msg":"flowcontrol: failed reading after 0 records: transactionlog: bad header: leveldb/record: reader not in first block","chunk":{"InitialOffset":48895,"InitialNumber":234,"Count":46}}
+{"time":"2026-07-16T04:54:34.14766104Z","level":"ERROR","msg":"flowcontrol: failed reading after 0 records: transactionlog: bad header: leveldb/record: reader not in first block","chunk":{"InitialOffset":54612,"InitialNumber":280,"Count":3}}
+{"time":"2026-07-16T04:54:34.147674235Z","level":"INFO","msg":"flowcontrol: unblocked","totalOffloaded":49}
+{"time":"2026-07-16T05:09:36.23511149Z","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-07-16T05:09:36.645502919Z","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2026-07-16T05:09:36.647851976Z","level":"INFO","msg":"stream: closing","id":"bz420yk8"}
+{"time":"2026-07-16T05:09:36.647856254Z","level":"INFO","msg":"handler: closed","stream_id":"bz420yk8"}
+{"time":"2026-07-16T05:09:36.647882519Z","level":"INFO","msg":"sender: closed","stream_id":"bz420yk8"}
+{"time":"2026-07-16T05:09:36.647885699Z","level":"INFO","msg":"stream: closed","id":"bz420yk8"}

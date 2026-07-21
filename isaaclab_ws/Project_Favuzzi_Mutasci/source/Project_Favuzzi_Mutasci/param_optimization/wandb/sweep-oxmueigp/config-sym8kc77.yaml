@@ -1,0 +1,56 @@
+wandb_version: 1
+
+entropy_loss_scale:
+  value: 0.01
+learning_epochs:
+  value: 12
+learning_rate:
+  value: 0.001
+max_timesteps:
+  value: 30000
+mini_batches:
+  value: 2
+oob_reward:
+  value: -50
+policy_units_l1:
+  value: 128
+policy_units_l2:
+  value: 64
+policy_units_l3:
+  value: 128
+rew_scale_action_smoothness:
+  value: -1
+rew_scale_alive:
+  value: 0
+rew_scale_position_approach:
+  value: 20
+rew_scale_position_prec:
+  value: 5
+rew_scale_reg_ang_vel:
+  value: -0.01
+rew_scale_target_reached:
+  value: 40
+rew_scale_vel_mask_penalty:
+  value: -1
+rew_scale_yaw_error:
+  value: -3
+rew_scale_yaw_prec:
+  value: 10
+reward_exp_beta:
+  value: 2
+reward_exp_beta_prec:
+  value: 5
+reward_exp_beta_yaw_prec:
+  value: 4
+rollouts:
+  value: 24
+target_hold_time_s:
+  value: 1.6
+target_reach_threshold:
+  value: 0.2
+target_reach_yaw_threshold:
+  value: 0.15
+tilt_death_reward:
+  value: -80
+uniciclo_docking_factor:
+  value: 4
