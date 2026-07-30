@@ -1,0 +1,27 @@
+2026-07-29 06:55:45,626 INFO    MainThread:9385 [wandb_setup.py:_flush():81] Current SDK version is 0.28.1
+2026-07-29 06:55:45,626 INFO    MainThread:9385 [wandb_setup.py:_flush():81] Configure stats pid to 9385
+2026-07-29 06:55:45,626 INFO    MainThread:9385 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-07-29 06:55:45,626 INFO    MainThread:9385 [wandb_init.py:setup_run_log_directory():729] Logging user logs to /workspace/project_workspace/Project_Favuzzi_Mutasci/source/Project_Favuzzi_Mutasci/param_optimization/wandb/run-20260729_065545-qif2aya0/logs/debug.log
+2026-07-29 06:55:45,626 INFO    MainThread:9385 [wandb_init.py:setup_run_log_directory():730] Logging internal logs to /workspace/project_workspace/Project_Favuzzi_Mutasci/source/Project_Favuzzi_Mutasci/param_optimization/wandb/run-20260729_065545-qif2aya0/logs/debug-internal.log
+2026-07-29 06:55:45,633 INFO    MainThread:9385 [wandb_init.py:init():772] calling init triggers
+2026-07-29 06:55:45,633 INFO    MainThread:9385 [wandb_init.py:init():777] wandb.init called with sweep_config: {'approach_brake_dist': 0.4, 'max_timesteps': 200000, 'rew_scale_action_smoothness': -10, 'rew_scale_aggressive_cmd': -5, 'rew_scale_approach_brake': -15, 'rew_scale_reg_ang_vel_wz': -0.035, 'rew_scale_reverse_vx': -70, 'rew_scale_vy_penalty_uniciclo': -200, 'rew_scale_vy_real_penalty_uniciclo': -125, 'yaw_gate_dist_uniciclo': 0.22}
+config: {'_wandb': {}}
+2026-07-29 06:55:45,633 INFO    MainThread:9385 [wandb_init.py:init():820] starting backend
+2026-07-29 06:55:45,633 INFO    MainThread:9385 [wandb_init.py:init():835] sending inform_init request
+2026-07-29 06:55:45,738 INFO    MainThread:9385 [wandb_init.py:init():840] backend started and connected
+2026-07-29 06:55:45,738 INFO    MainThread:9385 [wandb_run.py:_config_callback():1346] config_cb None None {'approach_brake_dist': 0.4, 'max_timesteps': 200000, 'rew_scale_action_smoothness': -10, 'rew_scale_aggressive_cmd': -5, 'rew_scale_approach_brake': -15, 'rew_scale_reg_ang_vel_wz': -0.035, 'rew_scale_reverse_vx': -70, 'rew_scale_vy_penalty_uniciclo': -200, 'rew_scale_vy_real_penalty_uniciclo': -125, 'yaw_gate_dist_uniciclo': 0.22}
+2026-07-29 06:55:45,739 INFO    MainThread:9385 [wandb_init.py:init():910] updated telemetry
+2026-07-29 06:55:45,742 INFO    MainThread:9385 [wandb_init.py:init():933] communicating run to backend with 90.0 second timeout
+2026-07-29 06:55:46,538 INFO    MainThread:9385 [wandb_init.py:init():978] starting run threads in backend
+2026-07-29 06:55:46,684 INFO    MainThread:9385 [wandb_run.py:_console_start():2621] atexit reg
+2026-07-29 06:55:46,684 INFO    MainThread:9385 [wandb_run.py:_redirect():2471] redirect: wrap_raw
+2026-07-29 06:55:46,684 INFO    MainThread:9385 [wandb_run.py:_redirect():2540] Wrapping output streams.
+2026-07-29 06:55:46,684 INFO    MainThread:9385 [wandb_run.py:_redirect():2563] Redirects installed.
+2026-07-29 06:55:46,685 INFO    MainThread:9385 [wandb_init.py:init():1016] run started, returning control to user process
+2026-07-29 06:55:46,685 INFO    MainThread:9385 [wandb_run.py:_config_callback():1346] config_cb None None {'seed': 4307}
+2026-07-29 06:55:51,423 INFO    MainThread:9385 [wandb_run.py:_tensorboard_callback():1574] tensorboard callback: /workspace/project_workspace/Project_Favuzzi_Mutasci/source/Project_Favuzzi_Mutasci/param_optimization/logs/skrl/pos_controller/2026-07-29_06-55-46_ppo_torch_POS_SWEEP_GLOBAL_V1/feasible-sweep-10, True
+2026-07-29 08:32:40,875 INFO    MainThread:9385 [wandb_run.py:_finish():2383] finishing run pieromutasci-politecnico-di-bari/tuning-position-controller/qif2aya0
+2026-07-29 08:32:40,876 INFO    MainThread:9385 [wandb_run.py:_atexit_cleanup():2588] got exitcode: 0
+2026-07-29 08:32:40,876 INFO    MainThread:9385 [wandb_run.py:_restore():2570] restore
+2026-07-29 08:32:40,876 INFO    MainThread:9385 [wandb_run.py:_restore():2576] restore done
+2026-07-29 08:32:48,251 INFO    MainThread:9385 [wandb_run.py:_footer_sync_info():3993] logging synced files

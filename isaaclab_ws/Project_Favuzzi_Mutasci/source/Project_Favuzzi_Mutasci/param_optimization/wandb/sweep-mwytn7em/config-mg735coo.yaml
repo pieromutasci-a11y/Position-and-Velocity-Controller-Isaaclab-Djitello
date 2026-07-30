@@ -1,0 +1,22 @@
+wandb_version: 1
+
+approach_brake_dist:
+  value: 0.5
+max_timesteps:
+  value: 200000
+rew_scale_action_smoothness:
+  value: -11
+rew_scale_aggressive_cmd:
+  value: -8
+rew_scale_approach_brake:
+  value: -12
+rew_scale_reg_ang_vel_wz:
+  value: -0.02
+rew_scale_reverse_vx:
+  value: -50
+rew_scale_vy_penalty_uniciclo:
+  value: -200
+rew_scale_vy_real_penalty_uniciclo:
+  value: -175
+yaw_gate_dist_uniciclo:
+  value: 0.22

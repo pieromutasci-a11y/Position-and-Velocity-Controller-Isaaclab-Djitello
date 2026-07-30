@@ -1,0 +1,354 @@
+[SWEEP] env_cfg.rew_scale_action_smoothness = -7
+[SWEEP] env_cfg.rew_scale_reg_ang_vel_wz = -0.02
+[SWEEP] env_cfg.rew_scale_aggressive_cmd = -5
+[SWEEP] env_cfg.rew_scale_reverse_vx = -50
+[SWEEP] env_cfg.rew_scale_vy_penalty_uniciclo = -250
+[SWEEP] env_cfg.rew_scale_vy_real_penalty_uniciclo = -200
+[SWEEP] env_cfg.rew_scale_approach_brake = -17
+[SWEEP] env_cfg.approach_brake_dist = 0.5
+[SWEEP] env_cfg.yaw_gate_dist_uniciclo = 0.22
+[SWEEP] trainer.timesteps = 200000
+[INFO] Creazione ambiente: Template-Project-Favuzzi-Mutasci-PosController-Direct-v0
+
+[36m======================================================================================[0m
+[36m[1m[INFO][IsaacLab]: Logging to file: /tmp/isaaclab/logs/isaaclab_2026-07-29_13-30-21.log[0m
+[36m======================================================================================[0m
+
+[33m13:30:21 [simulation_context.py] WARNING: The `enable_external_forces_every_iteration` parameter in the PhysxCfg is set to False. If you are experiencing noisy velocities, consider enabling this flag. You may need to slightly increase the number of velocity iterations (setting it to 1 or 2 rather than 0), together with this flag, to improve the accuracy of velocity updates.[0m
+[INFO]: Base environment:
+	Environment device    : cuda:0
+	Environment seed      : 5541
+	Physics step-size     : 0.01
+	Rendering step-size   : 0.04
+	Environment step-size : 0.04
+[INFO]: Time taken for scene creation : 3.121501 seconds
+[INFO]: Scene manager:  <class InteractiveScene>
+	Number of environments: 4096
+	Environment spacing   : 2.5
+	Source prim name      : /World/envs/env_0
+	Global prim paths     : []
+	Replicate physics     : True
+[INFO]: Starting the simulation. This may take a few seconds. Please wait...
+[INFO]: Time taken for simulation start : 0.784006 seconds
+[INFO]: Completed setting up the environment...
+[pos_env] low-level: input=17, hidden=[128, 128, 64], output=4
+[pos_env] low-level CONGELATO, caricato da /workspace/isaaclab/logs/skrl/vel_controller/2026-07-09_16-01-03_ppo_torch/checkpoints/best_agent.pt
+[pos_env] Leaky integrator: tau=5.0s, alpha=0.9920 per step (decadimento a 1/e in 5.0s, clamp=1.0, obs_scale=0.5)
+[pos_env] step_dt=0.0400s (25.0Hz HL) | low-level a 50.0Hz | episodio=750 step (30s)
+[pos_env] coda: n_waypoints=4, preview H=4 (1 feedback + 3 feedforward) | obs=52
+[pos_env] DoF mask: 2 maschere (SOLO full+uniciclo), probs=(0.5, 0.5) | spawn margin=0.8, take-off low_prob=0.3 z=(0.12, 0.25)
+[pos_env] UNICICLO: yaw_gate=0.22m vy_pen(ref)=-250 vy_pen(reale)=-200 brake(d=0.5m)=-17 hard_mask=False yaw_prec_esponenziale=SOLO_FULL
+[pos_env] reverse_vx_penalty=-50 (CONDIVISA: attiva per full e uniciclo)
+[pos_env] aggressive_cmd=-5 (CONDIVISA: attiva per full e uniciclo, wz escluso SOLO per uniciclo)
+[pos_env] sequenza CANONICA (variabile): prob=0.35 margin=0.8 min_dist=0.5m
+[pos_env] OBIETTIVO SWEEP: GLOBALE (errore+smoothness su tutti gli env), vy/retromarcia mascherati solo su uniciclo. Pesi: obj_w_err=1.0 obj_w_smooth=1.0 obj_w_rev=2.0 obj_w_vy_ref=2.0 obj_w_vy_real=2.0
+[38;20m[skrl:INFO] Environment wrapper: Isaac Lab (single-agent)[0m
+[38;20m[skrl:INFO] Seed: 5541[0m
+==================================================
+Shared model (roles): ['policy', 'value']
+==================================================
+
+class SharedModel(GaussianMixin,DeterministicMixin, Model):
+    def __init__(self, observation_space, action_space, device):
+        Model.__init__(self, observation_space, action_space, device)
+        GaussianMixin.__init__(
+            self,
+            clip_actions=True,
+            clip_log_std=True,
+            min_log_std=-20.0,
+            max_log_std=2.0,
+            reduction="sum",
+            role="policy",
+        )
+        DeterministicMixin.__init__(self, clip_actions=False, role="value")
+
+        self.net_container = nn.Sequential(
+            nn.LazyLinear(out_features=256),
+            nn.ELU(),
+            nn.LazyLinear(out_features=128),
+            nn.ELU(),
+            nn.LazyLinear(out_features=64),
+            nn.ELU(),
+        )
+        self.policy_layer = nn.LazyLinear(out_features=self.num_actions)
+        self.log_std_parameter = nn.Parameter(torch.full(size=(self.num_actions,), fill_value=0.0), requires_grad=True)
+        self.value_layer = nn.LazyLinear(out_features=1)
+
+    def act(self, inputs, role):
+        if role == "policy":
+            return GaussianMixin.act(self, inputs, role)
+        elif role == "value":
+            return DeterministicMixin.act(self, inputs, role)
+
+    def compute(self, inputs, role=""):
+        if role == "policy":
+            states = unflatten_tensorized_space(self.observation_space, inputs.get("states"))
+            taken_actions = unflatten_tensorized_space(self.action_space, inputs.get("taken_actions"))
+            net = self.net_container(states)
+            self._shared_output = net
+            output = self.policy_layer(net)
+            return output, self.log_std_parameter, {}
+        elif role == "value":
+            if self._shared_output is None:
+                states = unflatten_tensorized_space(self.observation_space, inputs.get("states"))
+                taken_actions = unflatten_tensorized_space(self.action_space, inputs.get("taken_actions"))
+                net = self.net_container(states)
+                shared_output = net
+            else:
+                shared_output = self._shared_output
+            self._shared_output = None
+            output = self.value_layer(shared_output)
+            return output, {}
+
+--------------------------------------------------
+[INFO] Avvio training...
+  0%|                                                                                                                                                                                                                                                                                                                              | 0/200000 [00:00<?, ?it/s][33m13:30:26 [articulation.py] WARNING: The function 'set_external_force_and_torque' will be deprecated in a future release. Please use 'permanent_wrench_composer.set_forces_and_torques' instead.[0m
+  0%|                                                                                                                                                                                                                                                                                                                   | 45/200000 [00:02<1:34:18, 35.34it/s]
+[pos][reset #50] n_env=30
+  reward(step) approach=+0.0217 prec=+0.0017 yaw=-0.0109 yaw_prec=+0.0005 vy_pen(ref)=-0.2831 vy_pen(reale)=-0.0151 brake=+0.0000 reverse_vx=-0.0267 aggressive_cmd=-0.0302
+  errori   pos_err=4.972m yaw_err=2.171rad dist_fin=1.928m yaw_fin=1.508rad
+  OBJECTIVE (GLOBALE) error_mean=2.2293 smoothness_mean=0.4002 composite=2.7712
+  OBJECTIVE contrib   error=2.2293 smooth=0.4002 reverse=0.0382 vy_ref=0.0835 vy_real=0.0199
+  DIAG (solo uniciclo) vy_ref=0.0418 vy_reale=0.0100 retromarcia=0.0191
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=27 (90.0%) time_out=3 min_clearance=0.01m
+  modalita variabile=0.83 singolo=0.17 (hover=0.03, canonica=0.33)
+  DoF mask frac  vx=1.00 vy=0.43 vz=1.00 wz=1.00
+  0%|▏                                                                                                                                                                                                                                                                                                                  | 96/200000 [00:03<1:48:34, 30.69it/s]
+[pos][reset #100] n_env=30
+  reward(step) approach=+0.0438 prec=+0.0043 yaw=-0.0197 yaw_prec=+0.0003 vy_pen(ref)=-0.5170 vy_pen(reale)=-0.0266 brake=-0.0001 reverse_vx=-0.0437 aggressive_cmd=-0.0525
+  errori   pos_err=4.574m yaw_err=2.017rad dist_fin=2.002m yaw_fin=1.540rad
+  OBJECTIVE (GLOBALE) error_mean=2.3098 smoothness_mean=0.7276 composite=3.2772
+  OBJECTIVE contrib   error=2.3098 smooth=0.7276 reverse=0.0621 vy_ref=0.1428 vy_real=0.0347
+  DIAG (solo uniciclo) vy_ref=0.0714 vy_reale=0.0174 retromarcia=0.0311
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=25 (83.3%) time_out=5 min_clearance=0.03m
+  modalita variabile=0.83 singolo=0.17 (hover=0.03, canonica=0.37)
+  DoF mask frac  vx=1.00 vy=0.37 vz=1.00 wz=1.00
+  0%|▏                                                                                                                                                                                                                                                                                                                 | 144/200000 [00:05<1:58:08, 28.19it/s][33m13:30:31 [articulation.py] WARNING: The function 'set_external_force_and_torque' will be deprecated in a future release. Please use 'permanent_wrench_composer.set_forces_and_torques' instead.[0m
+  0%|▏                                                                                                                                                                                                                                                                                                                 | 148/200000 [00:05<1:52:20, 29.65it/s]
+[pos][reset #150] n_env=46
+  reward(step) approach=+0.0590 prec=+0.0060 yaw=-0.0144 yaw_prec=+0.0007 vy_pen(ref)=-0.7907 vy_pen(reale)=-0.0399 brake=-0.0001 reverse_vx=-0.0623 aggressive_cmd=-0.0558
+  errori   pos_err=5.197m yaw_err=2.260rad dist_fin=2.021m yaw_fin=1.534rad
+  OBJECTIVE (GLOBALE) error_mean=2.3281 smoothness_mean=0.8609 composite=3.4921
+  OBJECTIVE contrib   error=2.3281 smooth=0.8609 reverse=0.0747 vy_ref=0.1827 vy_real=0.0457
+  DIAG (solo uniciclo) vy_ref=0.0914 vy_reale=0.0228 retromarcia=0.0373
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=42 (91.3%) time_out=4 min_clearance=0.06m
+  modalita variabile=0.76 singolo=0.24 (hover=0.02, canonica=0.33)
+  DoF mask frac  vx=1.00 vy=0.24 vz=1.00 wz=1.00
+  0%|▎                                                                                                                                                                                                                                                                                                                 | 195/200000 [00:06<1:44:55, 31.74it/s]
+[pos][reset #200] n_env=48
+  reward(step) approach=+0.0532 prec=+0.0046 yaw=-0.0382 yaw_prec=+0.0006 vy_pen(ref)=-0.4747 vy_pen(reale)=-0.0252 brake=-0.0001 reverse_vx=-0.0494 aggressive_cmd=-0.0719
+  errori   pos_err=5.886m yaw_err=2.612rad dist_fin=2.481m yaw_fin=1.498rad
+  OBJECTIVE (GLOBALE) error_mean=2.7808 smoothness_mean=0.8921 composite=3.9882
+  OBJECTIVE contrib   error=2.7808 smooth=0.8921 reverse=0.0876 vy_ref=0.1806 vy_real=0.0470
+  DIAG (solo uniciclo) vy_ref=0.0903 vy_reale=0.0235 retromarcia=0.0438
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=46 (95.8%) time_out=2 min_clearance=0.08m
+  modalita variabile=0.81 singolo=0.19 (hover=0.04, canonica=0.25)
+  DoF mask frac  vx=1.00 vy=0.50 vz=1.00 wz=1.00
+  0%|▍                                                                                                                                                                                                                                                                                                                 | 246/200000 [00:08<1:49:43, 30.34it/s]
+[pos][reset #250] n_env=47
+  reward(step) approach=+0.0429 prec=+0.0029 yaw=-0.0220 yaw_prec=+0.0006 vy_pen(ref)=-0.3294 vy_pen(reale)=-0.0190 brake=-0.0001 reverse_vx=-0.0340 aggressive_cmd=-0.0467
+  errori   pos_err=6.656m yaw_err=2.867rad dist_fin=2.446m yaw_fin=1.488rad
+  OBJECTIVE (GLOBALE) error_mean=2.7431 smoothness_mean=0.5859 composite=3.5180
+  OBJECTIVE contrib   error=2.7431 smooth=0.5859 reverse=0.0518 vy_ref=0.1089 vy_real=0.0282
+  DIAG (solo uniciclo) vy_ref=0.0545 vy_reale=0.0141 retromarcia=0.0259
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=46 (97.9%) time_out=1 min_clearance=0.06m
+  modalita variabile=0.74 singolo=0.26 (hover=0.04, canonica=0.32)
+  DoF mask frac  vx=1.00 vy=0.36 vz=1.00 wz=1.00
+  0%|▍                                                                                                                                                                                                                                                                                                                 | 297/200000 [00:09<1:37:03, 34.29it/s]
+[pos][reset #300] n_env=71
+  reward(step) approach=+0.0365 prec=+0.0050 yaw=-0.0243 yaw_prec=+0.0013 vy_pen(ref)=-0.1527 vy_pen(reale)=-0.0121 brake=-0.0003 reverse_vx=-0.0226 aggressive_cmd=-0.0421
+  errori   pos_err=7.116m yaw_err=2.939rad dist_fin=2.354m yaw_fin=1.559rad
+  OBJECTIVE (GLOBALE) error_mean=2.6657 smoothness_mean=0.4512 composite=3.2638
+  OBJECTIVE contrib   error=2.6657 smooth=0.4512 reverse=0.0446 vy_ref=0.0777 vy_real=0.0247
+  DIAG (solo uniciclo) vy_ref=0.0388 vy_reale=0.0123 retromarcia=0.0223
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=70 (98.6%) time_out=1 min_clearance=0.05m
+  modalita variabile=0.75 singolo=0.25 (hover=0.08, canonica=0.25)
+  DoF mask frac  vx=1.00 vy=0.49 vz=1.00 wz=1.00
+  0%|▍                                                                                                                                                                                                                                                                                                                 | 316/200000 [00:10<1:43:34, 32.13it/s][33m13:30:36 [articulation.py] WARNING: The function 'set_external_force_and_torque' will be deprecated in a future release. Please use 'permanent_wrench_composer.set_forces_and_torques' instead.[0m
+  0%|▌                                                                                                                                                                                                                                                                                                                 | 346/200000 [00:10<1:37:28, 34.14it/s]
+[pos][reset #350] n_env=68
+  reward(step) approach=+0.0396 prec=+0.0024 yaw=-0.0273 yaw_prec=+0.0012 vy_pen(ref)=-0.1325 vy_pen(reale)=-0.0103 brake=-0.0001 reverse_vx=-0.0169 aggressive_cmd=-0.0482
+  errori   pos_err=6.745m yaw_err=2.947rad dist_fin=2.419m yaw_fin=1.367rad
+  OBJECTIVE (GLOBALE) error_mean=2.6927 smoothness_mean=0.4676 composite=3.2786
+  OBJECTIVE contrib   error=2.6927 smooth=0.4676 reverse=0.0328 vy_ref=0.0650 vy_real=0.0204
+  DIAG (solo uniciclo) vy_ref=0.0325 vy_reale=0.0102 retromarcia=0.0164
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=68 (100.0%) time_out=0 min_clearance=0.06m
+  modalita variabile=0.82 singolo=0.18 (hover=0.03, canonica=0.28)
+  DoF mask frac  vx=1.00 vy=0.44 vz=1.00 wz=1.00
+  0%|▌                                                                                                                                                                                                                                                                                                                 | 397/200000 [00:12<1:31:34, 36.33it/s]
+[pos][reset #400] n_env=96
+  reward(step) approach=+0.0295 prec=+0.0015 yaw=-0.0235 yaw_prec=+0.0005 vy_pen(ref)=-0.0623 vy_pen(reale)=-0.0063 brake=-0.0001 reverse_vx=-0.0085 aggressive_cmd=-0.0310
+  errori   pos_err=7.047m yaw_err=3.016rad dist_fin=2.290m yaw_fin=1.484rad
+  OBJECTIVE (GLOBALE) error_mean=2.5869 smoothness_mean=0.2643 composite=2.9304
+  OBJECTIVE contrib   error=2.5869 smooth=0.2643 reverse=0.0200 vy_ref=0.0435 vy_real=0.0156
+  DIAG (solo uniciclo) vy_ref=0.0218 vy_reale=0.0078 retromarcia=0.0100
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=96 (100.0%) time_out=0 min_clearance=0.04m
+  modalita variabile=0.70 singolo=0.30 (hover=0.04, canonica=0.25)
+  DoF mask frac  vx=1.00 vy=0.52 vz=1.00 wz=1.00
+  0%|▋                                                                                                                                                                                                                                                                                                                 | 445/200000 [00:13<1:37:53, 33.98it/s]
+[pos][reset #450] n_env=97
+  reward(step) approach=+0.0248 prec=+0.0023 yaw=-0.0182 yaw_prec=+0.0006 vy_pen(ref)=-0.0331 vy_pen(reale)=-0.0034 brake=-0.0001 reverse_vx=-0.0033 aggressive_cmd=-0.0242
+  errori   pos_err=7.308m yaw_err=3.020rad dist_fin=2.390m yaw_fin=1.381rad
+  OBJECTIVE (GLOBALE) error_mean=2.6662 smoothness_mean=0.1727 composite=2.8936
+  OBJECTIVE contrib   error=2.6662 smooth=0.1727 reverse=0.0112 vy_ref=0.0322 vy_real=0.0115
+  DIAG (solo uniciclo) vy_ref=0.0161 vy_reale=0.0057 retromarcia=0.0056
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=97 (100.0%) time_out=0 min_clearance=0.03m
+  modalita variabile=0.82 singolo=0.18 (hover=0.05, canonica=0.26)
+  DoF mask frac  vx=1.00 vy=0.60 vz=1.00 wz=1.00
+  0%|▋                                                                                                                                                                                                                                                                                                                 | 480/200000 [00:15<1:55:43, 28.74it/s][33m13:30:41 [articulation.py] WARNING: The function 'set_external_force_and_torque' will be deprecated in a future release. Please use 'permanent_wrench_composer.set_forces_and_torques' instead.[0m
+  0%|▊                                                                                                                                                                                                                                                                                                                 | 494/200000 [00:15<1:34:25, 35.21it/s]
+[pos][reset #500] n_env=118
+  reward(step) approach=+0.0220 prec=+0.0017 yaw=-0.0177 yaw_prec=+0.0011 vy_pen(ref)=-0.0210 vy_pen(reale)=-0.0023 brake=-0.0001 reverse_vx=-0.0018 aggressive_cmd=-0.0206
+  errori   pos_err=7.301m yaw_err=3.037rad dist_fin=2.328m yaw_fin=1.413rad
+  OBJECTIVE (GLOBALE) error_mean=2.6106 smoothness_mean=0.1286 composite=2.7759
+  OBJECTIVE contrib   error=2.6106 smooth=0.1286 reverse=0.0068 vy_ref=0.0220 vy_real=0.0080
+  DIAG (solo uniciclo) vy_ref=0.0110 vy_reale=0.0040 retromarcia=0.0034
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=118 (100.0%) time_out=0 min_clearance=0.03m
+  modalita variabile=0.75 singolo=0.25 (hover=0.07, canonica=0.33)
+  DoF mask frac  vx=1.00 vy=0.56 vz=1.00 wz=1.00
+  0%|▊                                                                                                                                                                                                                                                                                                                 | 545/200000 [00:17<1:33:18, 35.62it/s]
+[pos][reset #550] n_env=124
+  reward(step) approach=+0.0199 prec=+0.0016 yaw=-0.0133 yaw_prec=+0.0005 vy_pen(ref)=-0.0213 vy_pen(reale)=-0.0021 brake=-0.0000 reverse_vx=-0.0016 aggressive_cmd=-0.0162
+  errori   pos_err=7.150m yaw_err=3.060rad dist_fin=2.232m yaw_fin=1.382rad
+  OBJECTIVE (GLOBALE) error_mean=2.5085 smoothness_mean=0.0847 composite=2.6314
+  OBJECTIVE contrib   error=2.5085 smooth=0.0847 reverse=0.0064 vy_ref=0.0237 vy_real=0.0081
+  DIAG (solo uniciclo) vy_ref=0.0118 vy_reale=0.0041 retromarcia=0.0032
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=124 (100.0%) time_out=0 min_clearance=0.03m
+  modalita variabile=0.85 singolo=0.15 (hover=0.05, canonica=0.31)
+  DoF mask frac  vx=1.00 vy=0.53 vz=1.00 wz=1.00
+  0%|▉                                                                                                                                                                                                                                                                                                                 | 595/200000 [00:18<1:36:55, 34.29it/s]
+[pos][reset #600] n_env=118
+  reward(step) approach=+0.0174 prec=+0.0023 yaw=-0.0087 yaw_prec=+0.0008 vy_pen(ref)=-0.0135 vy_pen(reale)=-0.0018 brake=-0.0001 reverse_vx=-0.0009 aggressive_cmd=-0.0132
+  errori   pos_err=7.502m yaw_err=3.065rad dist_fin=2.150m yaw_fin=1.238rad
+  OBJECTIVE (GLOBALE) error_mean=2.3973 smoothness_mean=0.0539 composite=2.4771
+  OBJECTIVE contrib   error=2.3973 smooth=0.0539 reverse=0.0035 vy_ref=0.0160 vy_real=0.0063
+  DIAG (solo uniciclo) vy_ref=0.0080 vy_reale=0.0032 retromarcia=0.0018
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=118 (100.0%) time_out=0 min_clearance=0.02m
+  modalita variabile=0.83 singolo=0.17 (hover=0.08, canonica=0.26)
+  DoF mask frac  vx=1.00 vy=0.49 vz=1.00 wz=1.00
+  0%|▉                                                                                                                                                                                                                                                                                                                 | 645/200000 [00:20<1:32:58, 35.74it/s][33m13:30:46 [articulation.py] WARNING: The function 'set_external_force_and_torque' will be deprecated in a future release. Please use 'permanent_wrench_composer.set_forces_and_torques' instead.[0m
+
+[pos][reset #650] n_env=137
+  reward(step) approach=+0.0206 prec=+0.0023 yaw=-0.0091 yaw_prec=+0.0011 vy_pen(ref)=-0.0149 vy_pen(reale)=-0.0024 brake=-0.0002 reverse_vx=-0.0009 aggressive_cmd=-0.0152
+  errori   pos_err=7.389m yaw_err=3.045rad dist_fin=2.353m yaw_fin=1.252rad
+  OBJECTIVE (GLOBALE) error_mean=2.6034 smoothness_mean=0.0628 composite=2.6968
+  OBJECTIVE contrib   error=2.6034 smooth=0.0628 reverse=0.0037 vy_ref=0.0185 vy_real=0.0083
+  DIAG (solo uniciclo) vy_ref=0.0093 vy_reale=0.0042 retromarcia=0.0019
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=137 (100.0%) time_out=0 min_clearance=0.03m
+  modalita variabile=0.79 singolo=0.21 (hover=0.09, canonica=0.23)
+  DoF mask frac  vx=1.00 vy=0.47 vz=1.00 wz=1.00
+  0%|█                                                                                                                                                                                                                                                                                                                 | 698/200000 [00:21<1:55:06, 28.86it/s]
+[pos][reset #700] n_env=137
+  reward(step) approach=+0.0181 prec=+0.0014 yaw=-0.0075 yaw_prec=+0.0008 vy_pen(ref)=-0.0115 vy_pen(reale)=-0.0024 brake=-0.0001 reverse_vx=-0.0006 aggressive_cmd=-0.0122
+  errori   pos_err=7.432m yaw_err=3.045rad dist_fin=2.355m yaw_fin=1.135rad
+  OBJECTIVE (GLOBALE) error_mean=2.5822 smoothness_mean=0.0425 composite=2.6528
+  OBJECTIVE contrib   error=2.5822 smooth=0.0425 reverse=0.0031 vy_ref=0.0165 vy_real=0.0086
+  DIAG (solo uniciclo) vy_ref=0.0082 vy_reale=0.0043 retromarcia=0.0016
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=137 (100.0%) time_out=0 min_clearance=0.02m
+  modalita variabile=0.80 singolo=0.20 (hover=0.04, canonica=0.21)
+  DoF mask frac  vx=1.00 vy=0.50 vz=1.00 wz=1.00
+  0%|█▏                                                                                                                                                                                                                                                                                                                | 748/200000 [00:23<1:45:19, 31.53it/s]
+[pos][reset #750] n_env=119
+  reward(step) approach=+0.0155 prec=+0.0015 yaw=-0.0068 yaw_prec=+0.0009 vy_pen(ref)=-0.0065 vy_pen(reale)=-0.0013 brake=-0.0001 reverse_vx=-0.0003 aggressive_cmd=-0.0093
+  errori   pos_err=7.566m yaw_err=3.065rad dist_fin=2.392m yaw_fin=1.375rad
+  OBJECTIVE (GLOBALE) error_mean=2.6667 smoothness_mean=0.0304 composite=2.7164
+  OBJECTIVE contrib   error=2.6667 smooth=0.0304 reverse=0.0021 vy_ref=0.0116 vy_real=0.0056
+  DIAG (solo uniciclo) vy_ref=0.0058 vy_reale=0.0028 retromarcia=0.0010
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=119 (100.0%) time_out=0 min_clearance=0.02m
+  modalita variabile=0.84 singolo=0.16 (hover=0.04, canonica=0.20)
+  DoF mask frac  vx=1.00 vy=0.55 vz=1.00 wz=1.00
+  0%|█▏                                                                                                                                                                                                                                                                                                                | 797/200000 [00:24<1:44:26, 31.79it/s]
+[pos][reset #800] n_env=102
+  reward(step) approach=+0.0202 prec=+0.0026 yaw=-0.0063 yaw_prec=+0.0013 vy_pen(ref)=-0.0076 vy_pen(reale)=-0.0020 brake=-0.0001 reverse_vx=-0.0003 aggressive_cmd=-0.0105
+  errori   pos_err=7.402m yaw_err=3.045rad dist_fin=2.305m yaw_fin=1.136rad
+  OBJECTIVE (GLOBALE) error_mean=2.5318 smoothness_mean=0.0325 composite=2.5843
+  OBJECTIVE contrib   error=2.5318 smooth=0.0325 reverse=0.0017 vy_ref=0.0116 vy_real=0.0067
+  DIAG (solo uniciclo) vy_ref=0.0058 vy_reale=0.0034 retromarcia=0.0009
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=102 (100.0%) time_out=0 min_clearance=0.02m
+  modalita variabile=0.85 singolo=0.15 (hover=0.05, canonica=0.31)
+  DoF mask frac  vx=1.00 vy=0.43 vz=1.00 wz=1.00
+  0%|█▏                                                                                                                                                                                                                                                                                                                | 810/200000 [00:25<1:30:11, 36.81it/s][33m13:30:51 [articulation.py] WARNING: The function 'set_external_force_and_torque' will be deprecated in a future release. Please use 'permanent_wrench_composer.set_forces_and_torques' instead.[0m
+  0%|█▎                                                                                                                                                                                                                                                                                                                | 848/200000 [00:26<1:40:31, 33.02it/s]
+[pos][reset #850] n_env=90
+  reward(step) approach=+0.0213 prec=+0.0019 yaw=-0.0058 yaw_prec=+0.0018 vy_pen(ref)=-0.0068 vy_pen(reale)=-0.0017 brake=-0.0001 reverse_vx=-0.0002 aggressive_cmd=-0.0106
+  errori   pos_err=7.455m yaw_err=3.032rad dist_fin=2.320m yaw_fin=1.191rad
+  OBJECTIVE (GLOBALE) error_mean=2.5585 smoothness_mean=0.0328 composite=2.6120
+  OBJECTIVE contrib   error=2.5585 smooth=0.0328 reverse=0.0014 vy_ref=0.0123 vy_real=0.0070
+  DIAG (solo uniciclo) vy_ref=0.0062 vy_reale=0.0035 retromarcia=0.0007
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=90 (100.0%) time_out=0 min_clearance=0.03m
+  modalita variabile=0.78 singolo=0.22 (hover=0.07, canonica=0.26)
+  DoF mask frac  vx=1.00 vy=0.49 vz=1.00 wz=1.00
+  0%|█▎                                                                                                                                                                                                                                                                                                                | 895/200000 [00:27<1:42:14, 32.45it/s]
+[pos][reset #900] n_env=80
+  reward(step) approach=+0.0236 prec=+0.0027 yaw=-0.0064 yaw_prec=+0.0021 vy_pen(ref)=-0.0069 vy_pen(reale)=-0.0017 brake=-0.0001 reverse_vx=-0.0003 aggressive_cmd=-0.0104
+  errori   pos_err=7.151m yaw_err=3.033rad dist_fin=2.314m yaw_fin=1.349rad
+  OBJECTIVE (GLOBALE) error_mean=2.5838 smoothness_mean=0.0320 composite=2.6345
+  OBJECTIVE contrib   error=2.5838 smooth=0.0320 reverse=0.0014 vy_ref=0.0111 vy_real=0.0063
+  DIAG (solo uniciclo) vy_ref=0.0055 vy_reale=0.0031 retromarcia=0.0007
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=80 (100.0%) time_out=0 min_clearance=0.03m
+  modalita variabile=0.82 singolo=0.17 (hover=0.01, canonica=0.25)
+  DoF mask frac  vx=1.00 vy=0.40 vz=1.00 wz=1.00
+  0%|█▍                                                                                                                                                                                                                                                                                                                | 945/200000 [00:29<1:38:30, 33.68it/s]
+[pos][reset #950] n_env=65
+  reward(step) approach=+0.0216 prec=+0.0031 yaw=-0.0036 yaw_prec=+0.0017 vy_pen(ref)=-0.0095 vy_pen(reale)=-0.0028 brake=-0.0002 reverse_vx=-0.0003 aggressive_cmd=-0.0106
+  errori   pos_err=7.381m yaw_err=3.030rad dist_fin=2.448m yaw_fin=1.397rad
+  OBJECTIVE (GLOBALE) error_mean=2.7270 smoothness_mean=0.0292 composite=2.7804
+  OBJECTIVE contrib   error=2.7270 smooth=0.0292 reverse=0.0017 vy_ref=0.0140 vy_real=0.0085
+  DIAG (solo uniciclo) vy_ref=0.0070 vy_reale=0.0043 retromarcia=0.0009
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=65 (100.0%) time_out=0 min_clearance=0.03m
+  modalita variabile=0.77 singolo=0.23 (hover=0.08, canonica=0.18)
+  DoF mask frac  vx=1.00 vy=0.32 vz=1.00 wz=1.00
+  0%|█▍                                                                                                                                                                                                                                                                                                                | 978/200000 [00:30<1:31:46, 36.15it/s][33m13:30:56 [articulation.py] WARNING: The function 'set_external_force_and_torque' will be deprecated in a future release. Please use 'permanent_wrench_composer.set_forces_and_torques' instead.[0m
+  0%|█▌                                                                                                                                                                                                                                                                                                                | 998/200000 [00:30<1:34:36, 35.06it/s]
+[pos][reset #1000] n_env=36
+  reward(step) approach=+0.0338 prec=+0.0050 yaw=-0.0041 yaw_prec=+0.0054 vy_pen(ref)=-0.0079 vy_pen(reale)=-0.0017 brake=-0.0003 reverse_vx=-0.0002 aggressive_cmd=-0.0117
+  errori   pos_err=7.256m yaw_err=2.944rad dist_fin=2.504m yaw_fin=1.182rad
+  OBJECTIVE (GLOBALE) error_mean=2.7401 smoothness_mean=0.0419 composite=2.8027
+  OBJECTIVE contrib   error=2.7401 smooth=0.0419 reverse=0.0010 vy_ref=0.0128 vy_real=0.0069
+  DIAG (solo uniciclo) vy_ref=0.0064 vy_reale=0.0034 retromarcia=0.0005
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=36 (100.0%) time_out=0 min_clearance=0.04m
+  modalita variabile=0.81 singolo=0.19 (hover=0.11, canonica=0.08)
+  DoF mask frac  vx=1.00 vy=0.39 vz=1.00 wz=1.00
+  1%|█▌                                                                                                                                                                                                                                                                                                               | 1048/200000 [00:32<1:32:47, 35.73it/s]
+[pos][reset #1050] n_env=37
+  reward(step) approach=+0.0357 prec=+0.0058 yaw=-0.0067 yaw_prec=+0.0024 vy_pen(ref)=-0.0083 vy_pen(reale)=-0.0019 brake=-0.0001 reverse_vx=-0.0002 aggressive_cmd=-0.0106
+  errori   pos_err=7.223m yaw_err=2.988rad dist_fin=2.104m yaw_fin=1.128rad
+  OBJECTIVE (GLOBALE) error_mean=2.3293 smoothness_mean=0.0327 composite=2.3835
+  OBJECTIVE contrib   error=2.3293 smooth=0.0327 reverse=0.0012 vy_ref=0.0132 vy_real=0.0071
+  DIAG (solo uniciclo) vy_ref=0.0066 vy_reale=0.0036 retromarcia=0.0006
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=37 (100.0%) time_out=0 min_clearance=0.03m
+  modalita variabile=0.76 singolo=0.24 (hover=0.03, canonica=0.38)
+  DoF mask frac  vx=1.00 vy=0.35 vz=1.00 wz=1.00
+  1%|█▋                                                                                                                                                                                                                                                                                                               | 1096/200000 [00:33<1:39:44, 33.24it/s]
+[pos][reset #1100] n_env=18
+  reward(step) approach=+0.0270 prec=+0.0016 yaw=-0.0069 yaw_prec=+0.0055 vy_pen(ref)=-0.0047 vy_pen(reale)=-0.0012 brake=-0.0001 reverse_vx=-0.0002 aggressive_cmd=-0.0103
+  errori   pos_err=7.379m yaw_err=2.959rad dist_fin=2.471m yaw_fin=1.232rad
+  OBJECTIVE (GLOBALE) error_mean=2.7173 smoothness_mean=0.0341 composite=2.7652
+  OBJECTIVE contrib   error=2.7173 smooth=0.0341 reverse=0.0010 vy_ref=0.0082 vy_real=0.0047
+  DIAG (solo uniciclo) vy_ref=0.0041 vy_reale=0.0023 retromarcia=0.0005
+  WAYPOINT target_raggiunti/ep=0.00/3  wp_idx_finale(var)=0.00  coda_completata(var)=0%
+  fine     died=18 (100.0%) time_out=0 min_clearance=0.03m
+  modalita variabile=0.78 singolo=0.22 (hover=0.11, canonica=0.22)
+  DoF mask frac  vx=1.00 vy=0.39 vz=1.00 wz=1.00
+  1%|█▋                                                                                                                                                                                                                                                                                                               | 1130/200000 [00:34<1:57:55, 28.11it/s]

@@ -1,0 +1,71 @@
+_wandb:
+    value:
+        cli_version: 0.28.1
+        e:
+            y54gvusqz73qeot2i98ln8m3reqjo2xg:
+                cpu_count: 20
+                cpu_count_logical: 28
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "489309364224"
+                        used: "443123453952"
+                email: pieromutasci@gmail.com
+                executable: /workspace/isaaclab/_isaac_sim/kit/python/bin/python3
+                gpu: NVIDIA RTX A1000
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 2304
+                      memoryTotal: "8585740288"
+                      name: NVIDIA RTX A1000
+                      uuid: GPU-152819ba-1e5b-e5ac-3fda-5f2b85d8f393
+                host: c3lab-Precision-3680
+                memory:
+                    total: "33321402368"
+                os: Linux-6.8.0-136-generic-x86_64-with-glibc2.39
+                program: /workspace/project_workspace/Project_Favuzzi_Mutasci/scripts/skrl/train_sweep.py
+                python: CPython 3.11.13
+                root: /workspace/project_workspace/Project_Favuzzi_Mutasci/source/Project_Favuzzi_Mutasci/param_optimization
+                startedAt: "2026-07-29T05:18:59.981285Z"
+                writerId: y54gvusqz73qeot2i98ln8m3reqjo2xg
+        m: []
+        python_version: 3.11.13
+        t:
+            "1":
+                - 1
+                - 50
+            "2":
+                - 1
+                - 50
+            "3":
+                - 2
+                - 14
+                - 35
+                - 41
+            "4": 3.11.13
+            "5": 0.28.1
+            "12": 0.28.1
+            "13": linux-x86_64
+approach_brake_dist:
+    value: 0.5
+max_timesteps:
+    value: 200000
+rew_scale_action_smoothness:
+    value: -11
+rew_scale_aggressive_cmd:
+    value: -10
+rew_scale_approach_brake:
+    value: -12
+rew_scale_reg_ang_vel_wz:
+    value: -0.02
+rew_scale_reverse_vx:
+    value: -50
+rew_scale_vy_penalty_uniciclo:
+    value: -400
+rew_scale_vy_real_penalty_uniciclo:
+    value: -200
+seed:
+    value: 1778
+yaw_gate_dist_uniciclo:
+    value: 0.18
