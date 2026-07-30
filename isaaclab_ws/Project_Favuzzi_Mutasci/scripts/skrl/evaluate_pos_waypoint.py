@@ -29,9 +29,25 @@
 #     rete usati dalla specifica run dello sweep che si vuole testare: basta puntare
 #     al checkpoint giusto con --checkpoint e lo script si adatta da solo.
 #
+#   - MODALITA' SPAWN (--spawn_mode):
+#         'free'             (default) comportamento invariato: spawn dal reset
+#                            standard dell'ambiente (curriculum spawn_low_prob),
+#                            nessun vincolo sull'ultimo target.
+#         'takeoff_landing'  il drone viene forzato a spawnare vicino al
+#                            pavimento (decollo) SUBITO DOPO il reset iniziale,
+#                            e l'ultimo waypoint dell'ULTIMA coda pursuita
+#                            (quella che porta a done_env=True) viene forzato
+#                            ad un'altezza bassa (atterraggio), mantenendo x,y
+#                            gia' campionati cosi' che il drone debba solo
+#                            scendere verticalmente per "atterrare". Utile per
+#                            valutare visivamente il comportamento di
+#                            decollo/atterraggio della policy in un contesto
+#                            altrimenti identico alla modalita' 'free'.
+#
 # Selezione da terminale:
 #   --mode  hover | singolo | variabile
 #   --mask  full | uniciclo | planare_olonomo
+#   --spawn_mode  free | takeoff_landing
 #
 # La maschera scelta viene applicata a TUTTI gli ambienti e resta FISSA per
 # l'intera valutazione (non ricampionata mai, a differenza del training dove
@@ -116,6 +132,20 @@ parser.add_argument(
     "--mask", type=str, default="full", choices=list(DOF_MASKS.keys()),
     help="Maschera DoF [vx,vy,vz,wz] FISSA per tutta l'evaluation (tutti gli env): "
          f"{', '.join(f'{k}={v}' for k, v in DOF_MASKS.items())}",
+)
+parser.add_argument(
+    "--spawn_mode", type=str, default="free", choices=["free", "takeoff_landing"],
+    help="'free': spawn/coda invariati rispetto al comportamento standard. "
+         "'takeoff_landing': il drone viene forzato a spawnare vicino al "
+         "pavimento subito dopo il reset iniziale (decollo), e l'ultimo "
+         "waypoint dell'ultima coda pursuita viene forzato ad altezza bassa "
+         "(atterraggio), mantenendo invariate le coordinate x,y gia' "
+         "campionate per quel waypoint.",
+)
+parser.add_argument(
+    "--landing_z", type=float, default=None,
+    help="Altezza [m] del target di atterraggio in modalita' takeoff_landing. "
+         "Default: usa cfg.min_z_pos dell'ambiente (il pavimento della stanza).",
 )
 parser.add_argument(
     "--eval_hold_time_s", type=float, default=None,
@@ -225,9 +255,9 @@ def genera_nuova_coda(base_env, env_ids, mode, device):
 
     _build_queue richiede SEMPRE spawn_pos/spawn_yaw non-None:
       - per planare_olonomo (wz=0): lo yaw corrente del drone viene usato per
-        congelare il target yaw su tutta la coda (il drone non puo' ruotare,
-        quindi il target yaw deve essere quello attuale, non uno casuale
-        irraggiungibile).
+        congelare il target YAW allo yaw corrente al momento della
+        rigenerazione della coda (il drone non puo' ruotare, quindi il target
+        yaw deve essere quello attuale, non uno casuale irraggiungibile).
       - per full e uniciclo: spawn_pos/spawn_yaw servono solo per hover (coda
         ripetuta sulla posa corrente); lo yaw del target e' libero.
     In tutti i casi si calcola la posa corrente del drone e la si passa."""
@@ -260,6 +290,49 @@ def applica_dof_mask_fissa(base_env, mask_name, env_ids, device):
     vals = DOF_MASKS[mask_name]
     mask_tensor = torch.tensor(vals, device=device, dtype=torch.float)
     base_env._dof_mask[env_ids] = mask_tensor
+
+
+def forza_spawn_da_terra(base_env, env_ids, device):
+    """Sovrascrive la posa root del drone per gli ambienti indicati portando
+    l'altezza vicino al pavimento (decollo), mantenendo invariate x,y e
+    l'orientazione correnti, e azzerando la velocita' lineare/angolare.
+
+    Usato SOLO in modalita' --spawn_mode takeoff_landing, subito dopo il
+    reset iniziale dell'ambiente (che altrimenti spawnerebbe con il
+    curriculum standard spawn_low_prob/spawn_room_margin usato in training).
+    """
+    n = env_ids.numel()
+    pos_env_current = base_env.robot.data.root_pos_w[env_ids] - base_env._env_origins[env_ids]
+    quat_current = base_env.robot.data.root_quat_w[env_ids].clone()
+
+    z_low = torch.empty(n, device=device).uniform_(
+        base_env.cfg.spawn_low_z_range[0], base_env.cfg.spawn_low_z_range[1]
+    )
+    pos_env_current = pos_env_current.clone()
+    pos_env_current[:, 2] = z_low
+
+    pose = torch.cat(
+        [pos_env_current + base_env._env_origins[env_ids], quat_current], dim=-1
+    )
+    vel_zero = torch.zeros(n, 6, device=device)
+
+    base_env.robot.write_root_pose_to_sim(pose, env_ids)
+    base_env.robot.write_root_velocity_to_sim(vel_zero, env_ids)
+
+
+def forza_atterraggio_ultima_coda(base_env, env_ids, landing_z, device):
+    """Sovrascrive SOLO l'ultimo waypoint (indice n_waypoints-1) della coda
+    appena generata per gli ambienti indicati, forzandone l'altezza a
+    landing_z. Le coordinate x,y del waypoint restano quelle GIA' campionate
+    da _build_queue: il drone deve quindi solo scendere verticalmente
+    sull'ultimo target per "atterrare", non spostarsi lateralmente.
+
+    Usato SOLO in modalita' --spawn_mode takeoff_landing, applicato
+    esclusivamente alla coda che verra' effettivamente pursuita fino alla
+    fine (quella il cui completamento porta done_env=True per l'ambiente).
+    """
+    n_wp = base_env.cfg.n_waypoints
+    base_env._wp_pos_queue[env_ids, n_wp - 1, 2] = landing_z
 
 
 def rileva_architettura_da_checkpoint(checkpoint_path):
@@ -605,6 +678,8 @@ def main(env_cfg, agent_cfg: dict):
         else math.radians(env_cfg.max_tilt_deg)
     )
 
+    landing_z = args_cli.landing_z if args_cli.landing_z is not None else env_cfg.min_z_pos
+
     all_ids = torch.arange(N, device=device)
 
     # -- FORZA la maschera DoF scelta da terminale, DOPO il reset iniziale --
@@ -614,7 +689,28 @@ def main(env_cfg, agent_cfg: dict):
         f"{args_cli.mask} = {DOF_MASKS[args_cli.mask]}"
     )
 
+    # -- MODALITA' SPAWN: takeoff_landing forza il decollo da terra --
+    if args_cli.spawn_mode == "takeoff_landing":
+        forza_spawn_da_terra(base_env, all_ids, device)
+        print(
+            f"[INFO] spawn_mode='takeoff_landing': drone forzato a spawnare "
+            f"vicino al pavimento (z in {env_cfg.spawn_low_z_range}), "
+            f"landing_z={landing_z:.2f}m"
+        )
+    else:
+        print("[INFO] spawn_mode='free': spawn/coda invariati.")
+
     genera_nuova_coda(base_env, all_ids, args_cli.mode, device)
+
+    # Contatore di code GENERATE per ambiente (diverso da queue_count, che
+    # conta le code COMPLETATE). Serve per identificare l'ultima coda che
+    # verra' effettivamente pursuita fino alla fine, cosi' da poterne forzare
+    # l'ultimo waypoint ad altezza di atterraggio in modalita' takeoff_landing.
+    codas_generate = torch.ones(N, dtype=torch.long)  # la coda iniziale conta come generata
+
+    if args_cli.spawn_mode == "takeoff_landing" and args_cli.num_queues == 1:
+        # caso limite: l'unica coda e' gia' quella iniziale
+        forza_atterraggio_ultima_coda(base_env, all_ids, landing_z, device)
 
     queue_count = torch.zeros(N, dtype=torch.long)
     steps_on_queue = torch.zeros(N, dtype=torch.long)
@@ -644,6 +740,7 @@ def main(env_cfg, agent_cfg: dict):
     durata_stimata_s = args_cli.num_queues * args_cli.max_steps_per_queue * control_dt
     print(
         f"[INFO] Avvio simulazione: mode='{args_cli.mode}' | mask='{args_cli.mask}' | "
+        f"spawn_mode='{args_cli.spawn_mode}' | "
         f"{args_cli.num_queues} code sequenziali di {n_wp} waypoint per ambiente "
         f"(reach_thr={reach_thr}m) | "
         f"step_dt={control_dt:.4f}s ({1/control_dt:.1f}Hz) | "
@@ -727,6 +824,22 @@ def main(env_cfg, agent_cfg: dict):
                     ids_t = torch.tensor([env_id], device=device)
                     genera_nuova_coda(base_env, ids_t, args_cli.mode, device)
                     applica_dof_mask_fissa(base_env, args_cli.mask, ids_t, device)
+                    codas_generate[env_id] += 1
+
+                    # Se la coda appena generata sara' l'ultima effettivamente
+                    # pursuita (quella il cui completamento porta
+                    # done_env=True), e siamo in modalita' takeoff_landing,
+                    # forza il suo ultimo waypoint ad altezza di atterraggio.
+                    if (
+                        args_cli.spawn_mode == "takeoff_landing"
+                        and codas_generate[env_id].item() == args_cli.num_queues
+                    ):
+                        forza_atterraggio_ultima_coda(base_env, ids_t, landing_z, device)
+                        print(
+                            f"[INFO] Env {env_id}: ultima coda (landing) generata, "
+                            f"ultimo waypoint forzato a z={landing_z:.2f}m"
+                        )
+
                     queue_count[env_id] += 1
                     steps_on_queue[env_id] = 0
                     hold_steps[env_id] = 0
@@ -901,7 +1014,8 @@ def main(env_cfg, agent_cfg: dict):
         err_yaw = torch.mean(torch.cat(err_yaw_all)).item()
         mvx, mvy, mvz, mwz = DOF_MASKS[args_cli.mask]
         print("\n" + "=" * 55)
-        print(f"  RISULTATI  (mode={args_cli.mode}, mask={args_cli.mask} [{mvx:.0f},{mvy:.0f},{mvz:.0f},{mwz:.0f}])")
+        print(f"  RISULTATI  (mode={args_cli.mode}, mask={args_cli.mask} [{mvx:.0f},{mvy:.0f},{mvz:.0f},{mwz:.0f}], "
+              f"spawn_mode={args_cli.spawn_mode})")
         print(f"  Code completate totali:  {int(queue_count.sum().item())}")
         print(f"  Errore medio posizione (INTERA traiettoria, incl. transitori): {err_pos:.4f} m")
         if err_pos_regime_all:
