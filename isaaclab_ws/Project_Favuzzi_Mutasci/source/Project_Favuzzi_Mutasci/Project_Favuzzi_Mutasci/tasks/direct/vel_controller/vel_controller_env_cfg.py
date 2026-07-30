@@ -28,6 +28,8 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 from isaaclab_assets import CRAZYFLIE_CFG
 
+from ..drone_physics import DroneInertialCfg, TELLO_INERTIAL_CFG
+
 
 # =======================================================================
 # FINESTRA PER DEBUG
@@ -97,8 +99,19 @@ class MyDroneVelEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Robot"
     )
 
-    thrust_to_weight = 1.9
-    moment_scale = 0.01
+    # -- PROPRIETA' INERZIALI: geometria Crazyflie, massa/inerzia del DJI Tello -- #
+    # L'asset USD resta cf2x.usd (nessun URDF del Tello da importare): massa e tensore
+    # d'inerzia vengono sovrascritti a runtime nell'__init__ dell'env. Metti
+    # enabled=False per tornare alla dinamica nativa del Crazyflie (necessario per
+    # rieseguire i checkpoint addestrati prima di questa modifica).
+    # Derivazione dei numeri e note di calibrazione: vedi ../drone_physics.py
+    drone_inertial: DroneInertialCfg = TELLO_INERTIAL_CFG.replace()
+
+    # -- ATTUATORI: tarati sul Tello, non piu' sul Crazyflie -- #
+    # Derivazione completa (braccio dall'URDF, coppia hover-preserving, drag torque
+    # yaw dimezzato) in ../drone_physics.py, note di calibrazione in fondo al file.
+    thrust_to_weight = 1.8
+    moment_scale = (0.021, 0.021, 0.0085)  # (roll, pitch, yaw)
 
     # -- RANGE DELLE VELOCITA' TARGET CHE IL DRONE DEVE IMPARARE A RAGGIUNGERE -- #
     max_lin_vel_xy = 1.0    # m/s, per vx e vy

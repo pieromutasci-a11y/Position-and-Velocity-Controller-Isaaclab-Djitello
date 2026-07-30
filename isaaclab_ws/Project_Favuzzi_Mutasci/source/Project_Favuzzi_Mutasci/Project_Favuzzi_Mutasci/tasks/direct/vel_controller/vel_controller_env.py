@@ -41,6 +41,7 @@ from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.utils.math import sample_uniform
 
+from ..drone_physics import apply_drone_inertial_props, log_inertial_props
 from .vel_controller_env_cfg import MyDroneVelEnvCfg
 
 
@@ -50,8 +51,19 @@ class MyDroneVelEnv(DirectRLEnv):
     def __init__(self, cfg: MyDroneVelEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
+        # -- massa e inerzia del Tello al posto di quelle del Crazyflie --
+        # Va fatto PRIMA di leggere _robot_mass qui sotto, che serve a scalare la
+        # spinta: cosi' il peso usato per il comando e' quello effettivo in sim.
+        applied = apply_drone_inertial_props(self.robot, self.cfg.drone_inertial)
+        log_inertial_props("vel_controller_env", applied, self.cfg.drone_inertial)
+
         # -- corpo del drone su cui applicare spinta e momenti --
         self._body_id = self.robot.find_bodies("body")[0]
+        # moment_scale e' (roll, pitch, yaw): yaw ha meta' autorita' di roll/pitch,
+        # vedi ../drone_physics.py. Tensore (1,3) per broadcasting su (N,3).
+        self._moment_scale = torch.tensor(
+            self.cfg.moment_scale, device=self.device
+        ).unsqueeze(0)
         self._robot_mass = float(self.robot.root_physx_view.get_masses()[0].sum())
         self._gravity_magnitude = float(
             torch.tensor(self.cfg.sim.gravity, device=self.device).norm().item()
@@ -193,7 +205,7 @@ class MyDroneVelEnv(DirectRLEnv):
         # thrust totale: canale 0 in [-1,1] -> [0,1] -> [0, thrust_to_weight * peso]
         self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
         # 3 momenti, canali 1..3
-        self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:4]
+        self._moment[:, 0, :] = self._moment_scale * self._actions[:, 1:4]
 
     def _apply_action(self) -> None:
         self.robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
