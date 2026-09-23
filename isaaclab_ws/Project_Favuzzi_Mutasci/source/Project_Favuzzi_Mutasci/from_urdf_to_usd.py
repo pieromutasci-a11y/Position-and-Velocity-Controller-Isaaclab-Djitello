@@ -18,7 +18,7 @@ def main():
         fix_base=False,
         merge_fixed_joints=True,
         force_usd_conversion=True,
-        joint_drive=None,  # nessun giunto attuato: niente drive da configurare
+        joint_drive=None,
     )
     converter = UrdfConverter(urdf_cfg)
     print("USD generato in:", converter.usd_path)

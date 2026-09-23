@@ -1,69 +1,3 @@
-# eval_sweep.py
-#
-# EVALUATION DETERMINISTICA per lo SWEEP wandb.
-#
-# Chiamata UNA VOLTA, nello stesso processo, subito dopo che il training di
-# un trial e' finito (stesso env, stesso agent, Isaac Sim non si riavvia).
-# Calcola un unico scalare (Eval/composite_target) da loggare su wandb come
-# metrica ufficiale dello sweep bayesiano, al posto di Objective/composite_target
-# calcolato in env.py durante il training (quello resta come diagnostica
-# "in diretta", ma soffre di policy stocastica e scenari diversi ad ogni
-# episodio: troppo rumoroso per guidare uno sweep bayesiano).
-#
-# STRUTTURA DELL'EVAL — 6 combinazioni FISSE (mask x mode):
-#   (full,hover) (full,singolo) (full,variabile)
-#   (uniciclo,hover) (uniciclo,singolo) (uniciclo,variabile)
-#
-#   "variabile" in eval e' SEMPRE puramente random: la sequenza canonica
-#   (avanti/indietro/destra/sinistra) e' solo per il training, qui non si
-#   usa mai (_is_canonical resta sempre False).
-#
-# GERARCHIA DELLA METRICA (concordata):
-#   1) per ogni ENV: media sui suoi waypoint dell'errore a regime e in
-#      transitorio (ogni waypoint del singolo env pesa 1 dentro quella
-#      media). "regime" = ultimo 30% degli step del tratto, "transitorio"
-#      = primo 70%; split ESATTO sulla durata reale di ciascun tratto.
-#      Stessa logica per smoothness/azioni/vy/reverse: media sui suoi
-#      step per quell'env.
-#   2) media TRA GLI ENV del gruppo: ogni ENV pesa 1, indipendentemente da
-#      quanti waypoint/step ha completato (un env che ne fa 10 e uno che
-#      ne fa 2 contano uguale).
-#   3) i pesi WCOMP_* (fissi, non sweeppati) riportano le componenti a
-#      contributi confrontabili nel cost, compensando le scale grezze
-#      molto diverse tra loro (stesso principio dei rew_scale_* nell'env):
-#         cost(mask,mode) = WCOMP_ERR_REGIME*err_regime + WCOMP_ERR_TRANSIT*err_transit
-#                         + WCOMP_SMOOTHNESS*smoothness + WCOMP_AZIONI*azioni
-#                         [+ WCOMP_VY_REF*vy_ref + WCOMP_VY_REAL*vy_real
-#                            + WCOMP_REVERSE*reverse_vx   SOLO per uniciclo]
-#   4) cost_full     = media( cost(full,hover), cost(full,singolo), cost(full,variabile) )
-#      cost_uniciclo = media( cost(uniciclo,hover), cost(uniciclo,singolo), cost(uniciclo,variabile) )
-#      (media semplice sulle 3 modalita': ognuna pesa 1/3)
-#   5) composite_target = W_FULL * cost_full + W_UNICICLO * cost_uniciclo
-#      (nessuna cerniera/protezione asimmetrica: full e uniciclo alla pari)
-#
-# Tutti i pesi (ALPHA_YAW, REGIME_FRAC, W_FULL, W_UNICICLO, WCOMP_*) sono
-# costanti FISSE qui sotto, NON sweeppate: definiscono COSA si vuole
-# ottimizzare (la funzione obiettivo), separati dai rew_scale_* del cfg
-# che definiscono COME si allena. Se lo sweep potesse toccarli, potrebbe
-# "vincere" azzerando il termine piu' difficile da migliorare, invalidando
-# il confronto tra trial.
-#
-# ===================================================================================
-# NUOVO IN QUESTO GIRO:
-#   - _RepresentativeRecorder: registra, per il PRIMO env id di ciascuna
-#     delle 6 combinazioni (mask, mode), la stessa serie temporale che
-#     evaluate_pos_controller_continuous.py plotta come .png (tracking
-#     x/y/z/yaw, errore di posizione, velocita' reali vs riferimento
-#     EFFETTIVAMENTE applicato). A fine eval, queste serie vengono scritte
-#     come CSV (uno per combinazione) e caricate su wandb come Artifact,
-#     cosi' da essere disponibili per OGNI run dello sweep, non solo per
-#     l'evaluation manuale standalone.
-#   - NON tocca in alcun modo la logica esistente di _Accumulators,
-#     _aggregate, ne' le metriche Eval/*/Objective/* gia' loggate: e' un
-#     binario di registrazione completamente parallelo e opzionale
-#     (recorder=None disabilita tutto senza alcun effetto collaterale).
-# ===================================================================================
-
 from __future__ import annotations
 
 import csv
@@ -76,43 +10,23 @@ import wandb
 
 from isaaclab.utils.math import euler_xyz_from_quat, quat_from_euler_xyz, sample_uniform
 
-# ===================================================================
-# COSTANTI DELL'OBIETTIVO — FISSE, NON SWEEPPATE
-# ===================================================================
-ALPHA_YAW = 0.2          # peso dello yaw dentro err_regime/err_transitorio
-REGIME_FRAC = 0.70       # frazione iniziale del tratto = transitorio; il resto = regime
-W_FULL = 1.0             # peso di cost_full nel composite_target
-W_UNICICLO = 1.0         # peso di cost_uniciclo nel composite_target
+ALPHA_YAW = 0.2
+REGIME_FRAC = 0.70
+W_FULL = 1.0
+W_UNICICLO = 1.0
 
-# ===================================================================
-# PESI PER-COMPONENTE del cost — FISSI, NON SWEEPPATI.
-#
-# Le componenti grezze hanno SCALE MOLTO DIVERSE: err_regime/err_transit
-# sono in metri (~0.1-0.4), smoothness e' Sum((Delta azione)^2) (~0.01-0.05),
-# azioni e' Sum(azione^2) (~0.05-0.3), vy_ref/vy_real/reverse sono |grandezza|
-# (~0.02-0.1). Sommate a peso 1 sarebbero DOMINATE dall'errore, e smoothness/
-# vy/reverse non conterebbero quasi nulla nella scelta dello sweep. Questi
-# pesi riportano ogni componente a un contributo confrontabile — STESSO
-# principio dei rew_scale_* nell'env.
-#
-# Taratura di partenza (da regolare guardando i grafici Eval/comp_* su
-# wandb: se una componente resta sempre trascurabile nel composite, alza
-# il suo peso; se ne domina una sola, abbassalo):
-WCOMP_ERR_REGIME = 3.0    # precisione a target: il pezzo piu' importante
-WCOMP_ERR_TRANSIT = 1.0   # qualita' del transitorio (gia' di scala ~0.3-0.4)
-WCOMP_SMOOTHNESS = 20.0   # oscillazioni: grezza ~0.02, va alzata per contare
-WCOMP_AZIONI = 5.0        # sforzo comando: grezza ~0.1
-WCOMP_VY_REF = 10.0       # solo uniciclo: deriva vy comandata (~0.05-0.1)
-WCOMP_VY_REAL = 10.0      # solo uniciclo: deriva vy reale
-WCOMP_REVERSE = 15.0      # solo uniciclo: retromarcia (da scoraggiare forte)
+WCOMP_ERR_REGIME = 3.0
+WCOMP_ERR_TRANSIT = 1.0
+WCOMP_SMOOTHNESS = 20.0
+WCOMP_AZIONI = 5.0
+WCOMP_VY_REF = 10.0
+WCOMP_VY_REAL = 10.0
+WCOMP_REVERSE = 15.0
 
-# ===================================================================
-# COSTANTI DELLO SCENARIO DI EVAL — FISSE, NON SWEEPPATE
-# ===================================================================
 EVAL_SEED = 20260101
-EVAL_NUM_ENVS = 3000              # deve essere <= num_envs del training env
-EVAL_NUM_QUEUES = 3               # code (rigenerazioni waypoint) per env
-EVAL_MAX_STEPS_PER_QUEUE = 600    # limite di sicurezza per singola coda
+EVAL_NUM_ENVS = 3000
+EVAL_NUM_QUEUES = 3
+EVAL_MAX_STEPS_PER_QUEUE = 600
 
 _MODES = ("hover", "singolo", "variabile")
 _MASKS = ("full", "uniciclo")
@@ -121,19 +35,10 @@ _DOF_MASKS = {
     "uniciclo": (1.0, 0.0, 1.0, 1.0),
 }
 
-
 def _wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
     return torch.atan2(torch.sin(angle), torch.cos(angle))
 
-
-# ===================================================================
-# ASSEGNAZIONE GRUPPI — deterministica, contigua, NON stocastica
-# ===================================================================
 def _assign_eval_groups(n_eval: int, device: torch.device) -> dict[tuple[str, str], torch.Tensor]:
-    """Partiziona [0, n_eval) in 6 blocchi contigui fissi (mask, mode).
-    Nessuna casualita' qui: la stessa combinazione riceve sempre lo stesso
-    range di env id, ad ogni trial. Gli env id restano validi come indici
-    dentro base_env.num_envs (n_eval <= num_envs)."""
     combos = [(m, mo) for m in _MASKS for mo in _MODES]
     n_combo = len(combos)
     chunk = n_eval // n_combo
@@ -145,24 +50,12 @@ def _assign_eval_groups(n_eval: int, device: torch.device) -> dict[tuple[str, st
         start = end
     return groups
 
-
-# ===================================================================
-# SETUP SCENARIO — seed fisso, identico ad ogni trial
-# ===================================================================
 def _setup_eval_scenario(base_env, groups: dict[tuple[str, str], torch.Tensor], device: torch.device):
-    """Fissa stanza, DoF mask, modalita' di riferimento e coda iniziale per
-    tutti gli env di eval, con un seed dedicato e riproducibile. Azzera
-    anche lo stato residuo lasciato dal training (azioni correnti/precedenti,
-    contatore ZOH del low-level), altrimenti il primo step dell'eval
-    userebbe dati sporchi ereditati dall'ultimo batch di training."""
     torch.manual_seed(EVAL_SEED)
 
     all_ids = torch.cat(list(groups.values()))
     base_env._sample_room(all_ids)
 
-    # Import assoluto: questo file vive in scripts/skrl/, NON dentro il
-    # pacchetto Project_Favuzzi_Mutasci.tasks.direct.pos_controller, quindi
-    # non puo' usare un import relativo (from .pos_controller_env import ...).
     from Project_Favuzzi_Mutasci.tasks.direct.pos_controller.pos_controller_env import (
         MODE_VARIABILE,
         MODE_SINGOLO,
@@ -181,13 +74,11 @@ def _setup_eval_scenario(base_env, groups: dict[tuple[str, str], torch.Tensor], 
         elif mode_name == "singolo":
             base_env._reference_mode[ids] = MODE_SINGOLO
             base_env._is_hover[ids] = False
-        else:  # variabile — SEMPRE random puro in eval, mai canonico
+        else:
             base_env._reference_mode[ids] = MODE_VARIABILE
             base_env._is_hover[ids] = False
         base_env._is_canonical[ids] = False
 
-    # -- reset fisico deterministico (stessa logica di _reset_idx, senza
-    # pero' ricampionare room/mode/dof_mask, gia' fissati sopra) --
     n = all_ids.numel()
     joint_pos = base_env.robot.data.default_joint_pos[all_ids]
     joint_vel = base_env.robot.data.default_joint_vel[all_ids]
@@ -210,59 +101,34 @@ def _setup_eval_scenario(base_env, groups: dict[tuple[str, str], torch.Tensor], 
     base_env._advanced_now[all_ids] = False
     base_env._err_integral[all_ids] = 0.0
 
-    # -- azzera stato residuo del training --
     base_env._actions[all_ids] = 0.0
     base_env._high_level_actions[all_ids] = 0.0
     base_env._prev_high_level_actions[all_ids] = 0.0
-    # Il contatore di decimation del low-level e' globale (non per-env):
-    # va azzerato una volta, altrimenti il primo ciclo ZOH in eval parte
-    # sfasato rispetto all'inizio del tratto.
     base_env._physics_step_counter = 0
 
     base_env._build_queue(all_ids, spawn_pos=spawn_pos_env, spawn_yaw=spawn_yaw)
 
-
 def _regenerate_queue(base_env, ids: torch.Tensor):
-    """Rigenera la coda per gli env indicati, SENZA toccare room/dof_mask/
-    mode (gia' fissati). 'variabile' resta sempre random puro (_is_canonical
-    resta False per costruzione)."""
     if ids.numel() == 0:
         return
     pos_env = base_env.robot.data.root_pos_w[ids] - base_env._env_origins[ids]
     _, _, yaw = euler_xyz_from_quat(base_env.robot.data.root_quat_w[ids])
     base_env._build_queue(ids, spawn_pos=pos_env, spawn_yaw=yaw)
 
-
-# ===================================================================
-# ACCUMULATORI — dimensionati su base_env.num_envs (NON su n_eval),
-# perche' tutti i tensori dell'env (dof_mask, high_level_actions, ecc.)
-# hanno quella dimensione. Gli env fuori dai 6 gruppi restano a zero e
-# non vengono mai letti in fase di aggregazione.
-# ===================================================================
 class _Accumulators:
-    """Tiene sia il buffer per lo split esatto regime/transitorio del
-    waypoint CORRENTE, sia le somme correnti (su tutta la durata
-    dell'eval) di smoothness/azioni/vy/reverse — una riga per ENV."""
 
     def __init__(self, n_total: int, max_steps_per_wp: int, device: torch.device):
         self.device = device
         self.n_total = n_total
         self.max_steps = max_steps_per_wp
 
-        # buffer per lo split esatto: errore combinato (pos + alpha*yaw)
-        # per ogni step del waypoint CORRENTE. Si azzera/riparte da 0 ad
-        # ogni avanzamento di waypoint.
         self.err_buf = torch.zeros(n_total, max_steps_per_wp, device=device)
         self.step_in_wp = torch.zeros(n_total, dtype=torch.long, device=device)
 
-        # accumulatori regime/transitorio: somma delle MEDIE-per-waypoint
-        # e conteggio, aggiornati SOLO quando un waypoint si completa.
         self.sum_err_regime = torch.zeros(n_total, device=device)
         self.sum_err_transit = torch.zeros(n_total, device=device)
         self.n_wp_completed = torch.zeros(n_total, device=device)
 
-        # accumulatori per-step, su TUTTA la durata dell'eval (non per
-        # waypoint): smoothness, azioni, vy_ref, vy_real, reverse_vx.
         self.sum_smoothness = torch.zeros(n_total, device=device)
         self.sum_azioni = torch.zeros(n_total, device=device)
         self.sum_vy_ref_abs = torch.zeros(n_total, device=device)
@@ -271,8 +137,6 @@ class _Accumulators:
         self.total_steps = torch.zeros(n_total, device=device)
 
     def record_step(self, base_env, active_mask: torch.Tensor):
-        """Chiamata ad OGNI step della simulazione, per tutti gli env
-        ancora attivi (che non hanno finito le loro num_queues code)."""
         dev = self.device
         pos_env = base_env.robot.data.root_pos_w - base_env._env_origins
         w0_pos, w0_yaw = base_env._current_target()
@@ -282,7 +146,6 @@ class _Accumulators:
         yaw_err = torch.abs(_wrap_to_pi(yaw - w0_yaw))
         err_combined = dist + ALPHA_YAW * yaw_err
 
-        # -- scrivi nel buffer del waypoint corrente (solo env attivi) --
         idx = self.step_in_wp.clamp(max=self.max_steps - 1)
         ar = torch.arange(self.n_total, device=dev)
         self.err_buf[ar[active_mask], idx[active_mask]] = err_combined[active_mask]
@@ -293,13 +156,9 @@ class _Accumulators:
         cmd_now = base_env._high_level_actions
         cmd_prev = base_env._prev_high_level_actions
 
-        # smoothness: Sum((Delta azione)^2) su tutti e 4 i canali.
         d_act = cmd_now - cmd_prev
         smoothness_step = torch.sum(torch.square(d_act), dim=1)
 
-        # azioni: penalita' GENERALE su TUTTE le azioni — tutti e 4 i canali,
-        # nessuna esclusione, per entrambe le maschere (misura lo sforzo di
-        # comando TOTALE come metrica di eval).
         azioni_step = torch.sum(torch.square(cmd_now), dim=1)
 
         vy_ref_step = torch.abs(cmd_now[:, 1])
@@ -315,11 +174,6 @@ class _Accumulators:
         self.total_steps += m
 
     def on_waypoint_advanced(self, adv_ids: torch.Tensor):
-        """Chiamata subito dopo che il flag _advanced_now e' stato True per
-        gli env in adv_ids: legge il buffer, fa lo split 70/30 ESATTO sulla
-        lunghezza effettiva di quel tratto, accumula la MEDIA del tratto
-        (non la somma: cosi' ogni waypoint pesa 1 indipendentemente da
-        quanti step e' durato), poi resetta il buffer per il prossimo wp."""
         if adv_ids.numel() == 0:
             return
         for env_id in adv_ids.tolist():
@@ -335,33 +189,19 @@ class _Accumulators:
             if regime_vals.numel() > 0:
                 self.sum_err_regime[env_id] += regime_vals.mean()
             else:
-                # tratto cosi' corto che non esiste una fase di regime
-                # distinta: usa la media del transitorio come fallback.
                 self.sum_err_regime[env_id] += transit_vals.mean()
             self.n_wp_completed[env_id] += 1
 
         self.err_buf[adv_ids] = 0.0
         self.step_in_wp[adv_ids] = 0
 
-
-# ===================================================================
-# REGISTRAZIONE SERIE TEMPORALE — SOLO 1 ENV RAPPRESENTATIVO PER GRUPPO
-# ===================================================================
-# Indipendente da _Accumulators: non tocca nessuna metrica Eval/* gia'
-# esistente. Registra, per il primo env id di ciascuno dei 6 gruppi
-# (mask,mode), le stesse grandezze dei plot di
-# evaluate_pos_controller_continuous.py (tracking, errore, velocita'),
-# cosi' da poter esportare un CSV equivalente ai .png per ogni run.
 class _RepresentativeRecorder:
     def __init__(self, groups: dict[tuple[str, str], torch.Tensor]):
-        # un solo env id per combinazione: il primo del gruppo
         self.rep_ids = {combo: ids[0].item() for combo, ids in groups.items() if ids.numel() > 0}
         self.rows: dict[tuple[str, str], list[dict]] = {combo: [] for combo in self.rep_ids}
         self._step_counter = 0
 
     def record_pre_step(self, base_env):
-        """Chiamata PRIMA di _pre_physics_step: cattura target/pos correnti,
-        esattamente come fa evaluate_pos_controller_continuous.py."""
         pos_env = base_env.robot.data.root_pos_w - base_env._env_origins
         _, _, yaw = euler_xyz_from_quat(base_env.robot.data.root_quat_w)
         w0_pos, w0_yaw = base_env._current_target()
@@ -380,9 +220,6 @@ class _RepresentativeRecorder:
             })
 
     def record_post_step(self, base_env):
-        """Chiamata DOPO lo step fisico: velocita' reali + riferimento
-        EFFETTIVAMENTE applicato (post-gating DoF mask), stesso allineamento
-        temporale usato in evaluate_pos_controller_continuous.py."""
         hl_applied = base_env._high_level_actions.clamp(-1.0, 1.0)
         ref_vel_step = hl_applied * base_env._vel_ref_scale
         lin_vel_b = base_env.robot.data.root_lin_vel_b
@@ -407,9 +244,6 @@ class _RepresentativeRecorder:
         self._step_counter += 1
 
     def write_csv(self, control_dt: float, out_dir: str) -> list[str]:
-        """Scrive un CSV per combinazione, colonne identiche ai tre plot
-        (tracking + errore + velocita'), aggiungendo 'time_s' esplicito.
-        Ritorna la lista dei path scritti."""
         os.makedirs(out_dir, exist_ok=True)
         paths = []
         fieldnames = [
@@ -434,10 +268,6 @@ class _RepresentativeRecorder:
             print(f"[sweep_eval] CSV serie temporale salvato: {path}")
         return paths
 
-
-# ===================================================================
-# LOOP DI SIMULAZIONE
-# ===================================================================
 @torch.inference_mode()
 def _run_eval_loop(base_env, agent, groups: dict[tuple[str, str], torch.Tensor], device: torch.device,
                     recorder: "_RepresentativeRecorder | None" = None):
@@ -451,9 +281,6 @@ def _run_eval_loop(base_env, agent, groups: dict[tuple[str, str], torch.Tensor],
     hold_steps = torch.zeros(n_total, dtype=torch.long, device=device)
     hold_steps_required = max(1, round(base_env.cfg.target_hold_time_s / base_env.step_dt))
 
-    # Attivo SOLO per gli env nei 6 gruppi; tutti gli altri (se n_eval <
-    # num_envs) restano "done" fin da subito e non vengono mai simulati
-    # ne' letti in aggregazione.
     done_env = torch.ones(n_total, dtype=torch.bool, device=device)
     done_env[all_ids] = False
 
@@ -496,9 +323,6 @@ def _run_eval_loop(base_env, agent, groups: dict[tuple[str, str], torch.Tensor],
         assestato = hold_steps >= hold_steps_required
         timeout_coda = steps_on_queue >= EVAL_MAX_STEPS_PER_QUEUE
 
-        # avanzamento all'INTERNO della coda: il flag _advanced_now e'
-        # gia' stato calcolato dentro _pre_physics_step -> _update_waypoint
-        # di QUESTO giro, quindi riflette lo stato subito dopo lo step.
         adv_now = base_env._advanced_now & active_mask
         adv_ids = adv_now.nonzero(as_tuple=False).squeeze(-1)
         acc.on_waypoint_advanced(adv_ids)
@@ -506,9 +330,6 @@ def _run_eval_loop(base_env, agent, groups: dict[tuple[str, str], torch.Tensor],
         finish_queue = (assestato | timeout_coda) & active_mask
         finish_ids = finish_queue.nonzero(as_tuple=False).squeeze(-1)
         if finish_ids.numel() > 0:
-            # l'ultimo waypoint della coda in chiusura non passa da
-            # _advanced_now (non c'e' un waypoint successivo nella STESSA
-            # coda): lo contiamo qui esplicitamente prima di rigenerare.
             acc.on_waypoint_advanced(finish_ids)
 
             queue_count[finish_ids] += 1
@@ -523,19 +344,10 @@ def _run_eval_loop(base_env, agent, groups: dict[tuple[str, str], torch.Tensor],
 
     return acc
 
-
-# ===================================================================
-# AGGREGAZIONE — media-per-env, poi media-tra-env, per OGNI componente
-# (ogni env pesa 1, indipendentemente da quanti waypoint/step ha fatto).
-# ===================================================================
 def _aggregate(acc: _Accumulators, groups: dict[tuple[str, str], torch.Tensor]) -> dict[str, float]:
     results: dict[str, float] = {}
     cost_by_mask: dict[str, list[float]] = {"full": [], "uniciclo": []}
 
-    # Componenti disaggregate GREZZE, raccolte per maschera per poterle poi
-    # mediare sulle 3 modalita' (stesso schema di cost_by_mask). Servono
-    # per i grafici su wandb: mostrano QUANTO ciascun pezzo contribuisce,
-    # in unita' leggibili (non pesate), cosi' da scegliere il compromesso.
     comp_by_mask: dict[str, dict[str, list[float]]] = {
         "full": {"err_regime": [], "err_transit": [], "smoothness": [], "azioni": []},
         "uniciclo": {"err_regime": [], "err_transit": [], "smoothness": [], "azioni": [],
@@ -546,19 +358,12 @@ def _aggregate(acc: _Accumulators, groups: dict[tuple[str, str], torch.Tensor]) 
         if ids.numel() == 0:
             continue
 
-        # -- ERRORE: media-per-env, poi media-tra-env. Per OGNI env:
-        # media dei suoi waypoint (sum_err_regime[env] contiene la somma
-        # delle medie-per-waypoint di QUEL env, diviso il suo numero di
-        # wp). Poi si media su tutti gli env del gruppo -> ogni ENV pesa
-        # 1, indipendentemente da quanti waypoint ha completato. --
         n_wp_env = acc.n_wp_completed[ids].clamp(min=1.0)
         err_regime_per_env = acc.sum_err_regime[ids] / n_wp_env
         err_transit_per_env = acc.sum_err_transit[ids] / n_wp_env
         err_regime = err_regime_per_env.mean().item()
         err_transit = err_transit_per_env.mean().item()
 
-        # -- smoothness/azioni: stesso principio (media-per-env, poi
-        # media-tra-env), su STEP invece che su waypoint. --
         n_steps_env = acc.total_steps[ids].clamp(min=1.0)
         smoothness = (acc.sum_smoothness[ids] / n_steps_env).mean().item()
         azioni = (acc.sum_azioni[ids] / n_steps_env).mean().item()
@@ -591,9 +396,6 @@ def _aggregate(acc: _Accumulators, groups: dict[tuple[str, str], torch.Tensor]) 
             comp_by_mask["uniciclo"]["vy_real"].append(vy_real)
             comp_by_mask["uniciclo"]["reverse_vx"].append(reverse_vx)
 
-        # -- grafici PER-COMBINAZIONE (6 gruppi): componenti GREZZE (non
-        # pesate) — comportamento fisico reale. 'cost' e' invece la somma
-        # GIA' PESATA (cio' che contribuisce al composite_target). --
         results[f"Eval/{mask_name}_{mode_name}_err_regime"] = err_regime
         results[f"Eval/{mask_name}_{mode_name}_err_transit"] = err_transit
         results[f"Eval/{mask_name}_{mode_name}_smoothness"] = smoothness
@@ -602,13 +404,10 @@ def _aggregate(acc: _Accumulators, groups: dict[tuple[str, str], torch.Tensor]) 
 
         cost_by_mask[mask_name].append(cost)
 
-    # -- media semplice tra le 3 modalita' (ogni modalita' pesa 1/3) --
     cost_full = sum(cost_by_mask["full"]) / max(len(cost_by_mask["full"]), 1)
     cost_uniciclo = sum(cost_by_mask["uniciclo"]) / max(len(cost_by_mask["uniciclo"]), 1)
     composite = W_FULL * cost_full + W_UNICICLO * cost_uniciclo
 
-    # -- COMPONENTI AGGREGATE PER MASCHERA (media sulle 3 modalita'): i
-    # grafici principali per scegliere il compromesso. --
     def _mean(lst: list[float]) -> float:
         return sum(lst) / max(len(lst), 1)
 
@@ -621,14 +420,7 @@ def _aggregate(acc: _Accumulators, groups: dict[tuple[str, str], torch.Tensor]) 
     results["Eval/composite_target"] = composite
     return results
 
-
-# ===================================================================
-# ENTRY POINT
-# ===================================================================
 def run_sweep_evaluation(base_env, agent, wandb_run=None) -> dict[str, float]:
-    """Da chiamare UNA VOLTA, nello stesso processo, subito dopo la fine
-    del training di un trial (Isaac Sim ancora aperto). Ritorna il dict di
-    metriche (gia' loggate su wandb_run se fornito)."""
     device = base_env.device
     n_eval = min(EVAL_NUM_ENVS, base_env.num_envs)
 
@@ -637,10 +429,6 @@ def run_sweep_evaluation(base_env, agent, wandb_run=None) -> dict[str, float]:
 
     agent.set_running_mode("eval")
 
-    # NUOVO: registratore della serie temporale per 1 env rappresentativo
-    # (il primo id) di ciascuna delle 6 combinazioni — completamente
-    # indipendente da _Accumulators/_aggregate, nessun effetto sulle
-    # metriche Eval/*/Objective/* gia' esistenti.
     recorder = _RepresentativeRecorder(groups)
     acc = _run_eval_loop(base_env, agent, groups, device, recorder=recorder)
 
@@ -652,10 +440,6 @@ def run_sweep_evaluation(base_env, agent, wandb_run=None) -> dict[str, float]:
         f"cost_uniciclo={results['Eval/cost_uniciclo']:.4f})"
     )
 
-    # ===================================================================
-    # NUOVO: CSV serie temporale (1 env per combinazione) + upload artifact
-    # Non tocca in alcun modo i risultati/log gia' esistenti sopra o sotto.
-    # ===================================================================
     if wandb_run is not None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             csv_paths = recorder.write_csv(base_env.step_dt, tmp_dir)

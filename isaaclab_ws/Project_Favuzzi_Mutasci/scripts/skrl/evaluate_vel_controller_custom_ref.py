@@ -1,5 +1,3 @@
-# evaluate_vel_controller_costante.py
-
 import argparse
 import sys
 import os
@@ -9,9 +7,6 @@ import matplotlib.pyplot as plt
 
 from isaaclab.app import AppLauncher
 
-# =======================================================================
-# ARGPARSE
-# =======================================================================
 parser = argparse.ArgumentParser(description="Evaluation skrl: tracking di un riferimento COSTANTE per VelController")
 parser.add_argument("--num_envs", type=int, default=1, help="Numero di ambienti da analizzare")
 parser.add_argument("--num_steps", type=int, default=500, help="Numero di step di controllo da registrare")
@@ -50,33 +45,23 @@ parser.add_argument(
     help="Target wz (rad/s) fisso da terminale. Se omesso insieme a vx/vy/vz, il target resta casuale."
 )
 
-# AppLauncher args (importante per avviare Isaac Sim)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + hydra_args
 
-# Avvio di Isaac Sim
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-# =======================================================================
-# IMPORT POST-AVVIO ISAAC SIM
-# =======================================================================
 import gymnasium as gym
 from isaacsim.util.debug_draw import _debug_draw
 from isaaclab.utils.math import quat_apply
 
-# Import SKRL e Wrapper IsaacLab
 from skrl.utils.runner.torch import Runner
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-# IMPORTANTE: Questo importa il tuo modulo e registra il task in Gymnasium
-import Project_Favuzzi_Mutasci.tasks  # noqa: F401
+import Project_Favuzzi_Mutasci.tasks
 
-# =======================================================================
-# UTILITY PER DEBUG VISIVO (FRECCE)
-# =======================================================================
 def costruisci_freccia(origine, vettore, scala=1.0, lunghezza_testa=0.06, larghezza_testa=0.035):
     punta = [origine[0] + vettore[0] * scala, origine[1] + vettore[1] * scala, origine[2] + vettore[2] * scala]
     norma = math.sqrt(sum((punta[i] - origine[i]) ** 2 for i in range(3)))
@@ -99,23 +84,8 @@ def costruisci_freccia(origine, vettore, scala=1.0, lunghezza_testa=0.06, larghe
     segmenti.append((tuple(punta), tuple(ala2)))
     return segmenti
 
-# =======================================================================
-# GENERATORE DI TARGET COSTANTE
-# =======================================================================
-# A differenza di RandomTargetGenerator (che ricampionava un nuovo target casuale ogni
-# hold_s secondi), qui il target viene campionato/impostato UNA SOLA VOLTA all'inizio,
-# per ciascun ambiente, e resta fisso per tutta la durata dell'evaluation. Nessun
-# ricampionamento, nessun transition_steps da segnare sui grafici.
-#
-# NOVITA': gli assi passati da terminale (--vx/--vy/--vz/--wz) sostituiscono il valore
-# casuale con un valore FISSO, identico per tutti gli ambienti. Gli assi omessi (None)
-# restano casuali come prima, indipendenti per ciascun ambiente.
 class ConstantTargetGenerator:
     def __init__(self, num_envs, device, env_cfg, override_manuale=None):
-        """override_manuale: sequenza di 4 valori (vx, vy, vz, wz), ciascuno float o
-        None. Se None l'asse resta campionato casualmente per ogni ambiente, come
-        prima; se float, quell'asse viene fissato a quel valore per TUTTI gli
-        ambienti."""
         self.num_envs = num_envs
         self.device = device
 
@@ -124,11 +94,9 @@ class ConstantTargetGenerator:
             device=device
         )
 
-        # base casuale, come prima
         rand_frac = torch.rand(num_envs, 4, device=device) * 2.0 - 1.0
         self.target = rand_frac * self.amps.unsqueeze(0)
 
-        # sovrascrivi con i valori manuali dove specificati (uguali per tutti gli envs)
         if override_manuale is not None:
             nomi_assi = ("vx", "vy", "vz", "wz")
             for i, valore in enumerate(override_manuale):
@@ -137,22 +105,15 @@ class ConstantTargetGenerator:
                     print(f"[INFO] Target manuale {nomi_assi[i]} = {valore} (fisso per tutti gli ambienti)")
 
     def get(self, step):
-        # restituisce sempre lo stesso target, indipendentemente dallo step
         return self.target.clone()
 
-# =======================================================================
-# MAIN LOGIC (Sfruttando Hydra e il Runner di skrl)
-# =======================================================================
 @hydra_task_config(args_cli.task, "skrl_cfg_entry_point")
 def main(env_cfg, experiment_cfg: dict):
-    # 1. Sovrascrittura configurazioni da riga di comando
     env_cfg.scene.num_envs = args_cli.num_envs
     control_dt = env_cfg.sim.dt * env_cfg.decimation
     env_cfg.episode_length_s = max(env_cfg.episode_length_s, args_cli.num_steps * control_dt + 1.0)
-    # Disabilitiamo il reset per tilt, vogliamo vedere se l'agente recupera
     env_cfg.terminate_su_tilt_eccessivo = False
 
-    # 2. Creazione dell'Ambiente e wrapping skrl
     print(f"[INFO] Creazione task: {args_cli.task}")
     env = gym.make(args_cli.task, cfg=env_cfg)
     env = SkrlVecEnvWrapper(env)
@@ -160,33 +121,17 @@ def main(env_cfg, experiment_cfg: dict):
     base_env = env.unwrapped
     device = env.device
 
-    # Blocchiamo il curriculum interno per l'evaluation.
-    #
-    # NOVITA' / FIX: impostare solo _hold_duration a un valore alto NON e' sufficiente:
-    # env.reset() (chiamato poco sotto) invoca _reset_idx per tutti gli ambienti, che
-    # a sua volta chiama _sample_new_targets - sovrascrivendo _hold_duration con un
-    # valore del livello di curriculum corrente (che riparte SEMPRE da 0 in una nuova
-    # istanza dell'ambiente, perche' il livello non e' salvato nel checkpoint). Il
-    # livello 0 ha hold_max_s=5.0s, che causava spike periodici ogni ~5s: ad ogni
-    # scadenza l'ambiente ricampionava un nuovo target casuale INTERNAMENTE, prima che
-    # questo script potesse sovrascriverlo al giro successivo del loop.
-    #
-    # Il flag disable_target_resampling (in vel_controller_env.py, _get_dones)
-    # disattiva del tutto quella logica, quindi sopravvive sia al reset iniziale sia a
-    # qualunque scadenza dell'hold.
     base_env.disable_target_resampling = True
     base_env._hold_duration[:] = 999999.0
     base_env._hold_timer[:] = 0.0
 
-    # 3. Configurazione del Runner skrl e caricamento del Modello
     experiment_cfg["trainer"]["close_environment_at_exit"] = False
     runner = Runner(env, experiment_cfg)
 
     print(f"[INFO] Caricamento checkpoint da: {args_cli.checkpoint}")
     runner.agent.load(args_cli.checkpoint)
-    runner.agent.set_running_mode("eval")  # Mette la rete in inferenza deterministica
+    runner.agent.set_running_mode("eval")
 
-    # 4. Inizializzazione target (COSTANTE) e variabili grafici
     override_manuale = (args_cli.vx, args_cli.vy, args_cli.vz, args_cli.wz)
     generator = ConstantTargetGenerator(args_cli.num_envs, device, env_cfg, override_manuale=override_manuale)
     obs, _ = env.reset()
@@ -199,13 +144,10 @@ def main(env_cfg, experiment_cfg: dict):
 
     with torch.inference_mode():
         for step in range(args_cli.num_steps):
-            # Il target e' sempre lo stesso, ma lo riapplichiamo comunque ad ogni step
-            # (l'ambiente non deve mai sovrascriverlo con un proprio ricampionamento)
             target = generator.get(step)
             base_env._target_vel[:] = target
             base_env._target_mask[:] = 1.0
 
-            # Forward della policy skrl (usiamo mean_actions per azioni deterministiche)
             outputs = runner.agent.act(obs, timestep=0, timesteps=0)
             actions = outputs[-1].get("mean_actions", outputs[0])
 
@@ -213,7 +155,6 @@ def main(env_cfg, experiment_cfg: dict):
                 [base_env.robot.data.root_lin_vel_b, base_env.robot.data.root_ang_vel_b[:, 2].unsqueeze(-1)], dim=-1
             )
 
-            # --- DEBUG VISIVO ---
             draw.clear_lines()
             posizioni = base_env.robot.data.root_pos_w
             orientamenti = base_env.robot.data.root_quat_w
@@ -229,35 +170,27 @@ def main(env_cfg, experiment_cfg: dict):
                 vel_target_world = quat_apply(quat.unsqueeze(0), vel_target_body.unsqueeze(0)).squeeze(0).cpu().tolist()
                 vel_reale_world = quat_apply(quat.unsqueeze(0), vel_reale_body.unsqueeze(0)).squeeze(0).cpu().tolist()
 
-                # Freccia VERDE: lineare target
                 for (p1, p2) in costruisci_freccia(origine, vel_target_world, scala=SCALA_VEL_LIN):
                     draw.draw_lines([p1], [p2], [(0.0, 1.0, 0.0, 1.0)], [3.0])
-                # Freccia ROSSA: lineare reale
                 for (p1, p2) in costruisci_freccia(origine, vel_reale_world, scala=SCALA_VEL_LIN):
                     draw.draw_lines([p1], [p2], [(1.0, 0.0, 0.0, 1.0)], [3.0])
 
                 wz_target = target_vel_correnti[env_id, 3].item()
                 wz_reale = current_vel[env_id, 3].item()
 
-                # Freccia GIALLA: wz target
                 for (p1, p2) in costruisci_freccia(origine, [0.0, 0.0, wz_target], scala=SCALA_VEL_ANG):
                     draw.draw_lines([p1], [p2], [(1.0, 1.0, 0.0, 1.0)], [3.0])
-                # Freccia BLU: wz reale
                 for (p1, p2) in costruisci_freccia(origine, [0.0, 0.0, wz_reale], scala=SCALA_VEL_ANG):
                     draw.draw_lines([p1], [p2], [(0.0, 0.0, 1.0, 1.0)], [3.0])
 
             storia_target_vel.append(base_env._target_vel.clone().cpu())
             storia_current_vel.append(current_vel.clone().cpu())
 
-            # Step dell'ambiente
             obs, _, _, _, _ = env.step(actions)
 
     draw.clear_lines()
     env.close()
 
-    # =======================================================================
-    # PLOTTING
-    # =======================================================================
     storia_target_vel = torch.stack(storia_target_vel)
     storia_current_vel = torch.stack(storia_current_vel)
 
@@ -272,8 +205,6 @@ def main(env_cfg, experiment_cfg: dict):
         for i in range(4):
             axes[i].plot(tempo_s.numpy(), storia_target_vel[:, env_id, i].numpy(), label="target", linestyle="--")
             axes[i].plot(tempo_s.numpy(), storia_current_vel[:, env_id, i].numpy(), label="reale")
-            # nessuna transizione da segnare: il target e' sempre lo stesso per tutta la
-            # durata dell'evaluation
             axes[i].set_ylabel(nomi_assi_vel[i])
             axes[i].legend(loc="upper right")
             axes[i].grid(True)

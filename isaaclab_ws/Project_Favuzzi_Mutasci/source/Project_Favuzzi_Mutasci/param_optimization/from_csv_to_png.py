@@ -1,48 +1,3 @@
-# csv_to_png_eval_sweep.py
-#
-# Converte i CSV prodotti da eval_sweep.py (_RepresentativeRecorder.write_csv,
-# uno per combinazione mask x mode: eval_timeseries_{mask}_{mode}.csv) negli
-# stessi 3 grafici .png prodotti da evaluate_pos_controller_continuous.py
-# per un singolo ambiente:
-#   1) tracking:  x, y, z, yaw (reale vs target)
-#   2) errore:    |pos - target| (vista log + zoom lineare)
-#   3) velocita': vx,vy,vz,wz (reali vs riferimento EFFETTIVAMENTE applicato)
-#
-# USO — due modalita', mutuamente esclusive:
-#
-#   1) Da un Artifact di wandb (SCARICA direttamente dal server wandb, non
-#      serve avere gia' i CSV su disco):
-#        python csv_to_png_eval_sweep.py \
-#            --wandb_artifact entity/project/eval_timeseries_<run_id>:latest
-#
-#      Se --out_dir non e' specificato, i .png vengono scritti nella sottocartella
-#      'graph' della directory dello script (es. .../param_optimization/graph/).
-#
-#   2) Da una cartella locale gia' contenente i CSV (comportamento originale):
-#        python csv_to_png_eval_sweep.py --csv_dir /path/dove/sono/i/csv
-#
-# I CSV attesi hanno nome "eval_timeseries_{mask}_{mode}.csv" con colonne:
-#   time_s, step,
-#   target_x, target_y, target_z, target_yaw,
-#   current_x, current_y, current_z, current_yaw,
-#   err_pos,
-#   lin_vel_x, lin_vel_y, lin_vel_z, ang_vel_z,
-#   ref_vx, ref_vy, ref_vz, ref_wz
-#
-# NOTA sui "queue_changes": il CSV non salva esplicitamente gli istanti di
-# fine-coda (quello lo sa solo il loop di eval_sweep.py). Come proxy visivo
-# equivalente, questo script traccia una linea verticale ogni volta che il
-# TARGET cambia (target_x/y/z/yaw diversi dalla riga precedente): cattura
-# sia i cambi di waypoint interni alla coda sia le rigenerazioni di coda,
-# quindi e' un surrogato ragionevole delle "queue_changes" originali (che
-# segnavano solo le rigenerazioni di coda, un sottoinsieme di questi).
-#
-# NOTA su reach_thr e DOF mask: non sono nel CSV (sono parametri di
-# ambiente/configurazione, non osservazioni per-step). Si passano da
-# linea di comando; i default sono quelli usati in eval_sweep.py
-# (target_reach_threshold di default = 0.15m) e le maschere DoF standard
-# del progetto (full/uniciclo).
-
 import argparse
 import csv
 import math
@@ -53,18 +8,12 @@ import tempfile
 import numpy as np
 import matplotlib.pyplot as plt
 
-# =======================================================================
-# MASCHERE DoF — devono combaciare con quelle usate in training/eval_sweep.
-# =======================================================================
 DOF_MASKS = {
     "full":            (1.0, 1.0, 1.0, 1.0),
-    "uniciclo":        (1.0, 0.0, 1.0, 1.0),  # vx + vz + wz, no vy
-    "planare_olonomo": (1.0, 1.0, 1.0, 0.0),  # vx + vy + vz, no wz
+    "uniciclo":        (1.0, 0.0, 1.0, 1.0),
+    "planare_olonomo": (1.0, 1.0, 1.0, 0.0),
 }
 
-# Scale di riferimento delle velocita' (target_lin_vel_xy/z_scale,
-# target_yaw_vel_scale nel cfg dell'ambiente). Default coerenti col cfg
-# corrente; sovrascrivibili da linea di comando se cambiano.
 DEFAULT_VEL_SCALES = {
     "vx": 1.0,
     "vy": 1.0,
@@ -72,9 +21,7 @@ DEFAULT_VEL_SCALES = {
     "wz": 1.5,
 }
 
-
 def _leggi_csv(path):
-    """Legge il CSV in un dict di liste (una entry per colonna)."""
     data = {}
     with open(path, "r", newline="") as f:
         reader = csv.DictReader(f)
@@ -89,11 +36,7 @@ def _leggi_csv(path):
         data[k] = np.asarray(data[k], dtype=np.float64)
     return data
 
-
 def _rileva_cambi_target(data, tol=1e-6):
-    """Ritorna la lista dei tempi (time_s) in cui target_x/y/z/yaw cambia
-    rispetto alla riga precedente — surrogato delle 'queue_changes'
-    originali (vedi nota in testa al file)."""
     tx, ty, tz, tyaw = data["target_x"], data["target_y"], data["target_z"], data["target_yaw"]
     t = data["time_s"]
     changes = []
@@ -106,7 +49,6 @@ def _rileva_cambi_target(data, tol=1e-6):
         ):
             changes.append(t[i])
     return changes
-
 
 def plot_tracking(data, mask_name, mode_name, out_dir):
     t = data["time_s"]
@@ -168,7 +110,6 @@ def plot_tracking(data, mask_name, mode_name, out_dir):
     plt.close(fig)
     print(f"[csv2png] Grafico tracking salvato in: {percorso}")
 
-
 def plot_errore(data, mask_name, mode_name, reach_thr, out_dir):
     t = data["time_s"]
     err = data["err_pos"]
@@ -211,7 +152,6 @@ def plot_errore(data, mask_name, mode_name, reach_thr, out_dir):
     plt.savefig(percorso, dpi=300)
     plt.close(fig)
     print(f"[csv2png] Grafico errore salvato in: {percorso}")
-
 
 def plot_velocita(data, mask_name, mode_name, vel_scales, out_dir):
     t = data["time_s"]
@@ -258,14 +198,7 @@ def plot_velocita(data, mask_name, mode_name, vel_scales, out_dir):
     plt.close(fig)
     print(f"[csv2png] Grafico velocita' salvato in: {percorso}")
 
-
 def _parse_nome_combo(filename):
-    """'eval_timeseries_uniciclo_variabile.csv' -> ('uniciclo', 'variabile')
-    'eval_timeseries_full_hover.csv'            -> ('full', 'hover')
-
-    Le maschere note (DOF_MASKS) sono provate come prefisso piu' lungo
-    possibile, cosi' 'uniciclo' (che non contiene '_') e 'planare_olonomo'
-    (che invece contiene '_') vengono entrambe riconosciute correttamente."""
     base = os.path.basename(filename)
     if not base.startswith("eval_timeseries_") or not base.endswith(".csv"):
         return None
@@ -277,12 +210,7 @@ def _parse_nome_combo(filename):
             return mask_name, mode_name
     return None
 
-
 def _scarica_artifact_wandb(artifact_path: str, download_root: str) -> str:
-    """Scarica un Artifact di wandb (es. 'entity/project/eval_timeseries_<run_id>:latest')
-    direttamente dal server wandb, senza bisogno di una cartella locale
-    preesistente. Ritorna la cartella locale in cui l'artifact e' stato
-    scaricato (contiene i CSV pronti da leggere)."""
     try:
         import wandb
     except ImportError:
@@ -299,7 +227,6 @@ def _scarica_artifact_wandb(artifact_path: str, download_root: str) -> str:
     local_dir = artifact.download(root=download_root)
     print(f"[csv2png] Artifact scaricato in: {local_dir}")
     return local_dir
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -340,10 +267,9 @@ def main():
     if args.csv_dir and args.wandb_artifact:
         parser.error("Usa SOLO uno tra --csv_dir e --wandb_artifact, non entrambi.")
 
-    # Default out_dir: la sottocartella "graph" nella directory dove si trova QUESTO script
     script_dir = os.path.dirname(os.path.abspath(__file__))
     default_out_dir = os.path.join(script_dir, "graph")
-    
+
     out_dir = args.out_dir if args.out_dir is not None else default_out_dir
     os.makedirs(out_dir, exist_ok=True)
 
@@ -354,8 +280,6 @@ def main():
         "wz": args.vel_scale_wz,
     }
 
-    # -- risolve la cartella da cui leggere i CSV: o quella passata da
-    # --csv_dir, oppure una scaricata al momento dall'Artifact di wandb --
     if args.wandb_artifact:
         with tempfile.TemporaryDirectory() as download_root:
             csv_dir = _scarica_artifact_wandb(args.wandb_artifact, download_root)
@@ -364,7 +288,6 @@ def main():
     else:
         csv_dir = args.csv_dir
         _elabora_csv(csv_dir, out_dir, args.reach_thr, vel_scales)
-
 
 def _elabora_csv(csv_dir, out_dir, reach_thr, vel_scales):
     csv_files = [
@@ -394,7 +317,6 @@ def _elabora_csv(csv_dir, out_dir, reach_thr, vel_scales):
         plot_velocita(data, mask_name, mode_name, vel_scales, out_dir)
 
     print(f"\n[csv2png] Completato. {len(csv_files)} combinazione/i elaborata/e -> {out_dir}")
-
 
 if __name__ == "__main__":
     main()
