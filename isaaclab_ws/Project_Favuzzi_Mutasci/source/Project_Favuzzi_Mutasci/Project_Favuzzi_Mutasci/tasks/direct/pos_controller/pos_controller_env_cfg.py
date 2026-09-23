@@ -140,18 +140,18 @@ class MyDronePosEnvCfg(DirectRLEnvCfg):
     # avvicinamento al target: termine ad ampio raggio + termine di precisione
     rew_scale_position_approach = 25.0
     reward_exp_beta = 0.5
-    rew_scale_position_prec = 25.0
-    reward_exp_beta_prec = 3.0
+    rew_scale_position_prec = 35.0
+    reward_exp_beta_prec = 8.0
 
     # errore di yaw (con gate di distanza in modalita' uniciclo)
     rew_scale_yaw_error = -8.0
 
     # precisione di yaw esponenziale (solo full)
-    rew_scale_yaw_prec = 5.0
-    reward_exp_beta_yaw_prec = 4.0
+    rew_scale_yaw_prec = 8.0
+    reward_exp_beta_yaw_prec = 7.0
 
     # smoothness delle azioni (variazione tra step consecutivi)
-    rew_scale_action_smoothness = -12.0
+    rew_scale_action_smoothness = -25.0
 
     # regolarizzazione velocita' angolari roll/pitch
     rew_scale_reg_ang_vel_xy = -0.00
