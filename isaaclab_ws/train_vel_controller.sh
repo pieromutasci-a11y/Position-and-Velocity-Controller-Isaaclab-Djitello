@@ -1,0 +1,1 @@
+cd /workspace/isaaclab && ./isaaclab.sh -p /workspace/project_workspace/Project_Favuzzi_Mutasci/scripts/skrl/train.py     --task Template-Project-Favuzzi-Mutasci-VelController-Direct-v0     --num_envs 4096   --headless
