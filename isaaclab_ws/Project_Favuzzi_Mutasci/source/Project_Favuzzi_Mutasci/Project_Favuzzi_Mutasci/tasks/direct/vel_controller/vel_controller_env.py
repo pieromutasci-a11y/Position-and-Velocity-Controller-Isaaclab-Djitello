@@ -16,12 +16,14 @@ from isaaclab.utils.math import sample_uniform
 from ..drone_physics import apply_drone_inertial_props, log_inertial_props
 from .vel_controller_env_cfg import MyDroneVelEnvCfg
 
+# controllore di velocita': livello interno (50Hz) che il controllore di posizione richiama in ZOH
 class MyDroneVelEnv(DirectRLEnv):
     cfg: MyDroneVelEnvCfg
 
     def __init__(self, cfg: MyDroneVelEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
+        # override massa/inerzia (Crazyflie -> Tello) e grandezze derivate (peso, gravita')
         applied = apply_drone_inertial_props(self.robot, self.cfg.drone_inertial)
         log_inertial_props("vel_controller_env", applied, self.cfg.drone_inertial)
 
@@ -35,11 +37,13 @@ class MyDroneVelEnv(DirectRLEnv):
         )
         self._robot_weight = self._robot_mass * self._gravity_magnitude
 
+        # buffer di azioni/spinta/momento applicati al drone
         self._actions = torch.zeros(self.num_envs, 4, device=self.device)
         self._prev_actions = torch.zeros_like(self._actions)
         self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
 
+        # scala massima di velocita' (lineare xy/z, angolare z) per normalizzare i riferimenti
         self._vel_range = torch.tensor(
             [
                 self.cfg.max_lin_vel_xy,
@@ -50,12 +54,15 @@ class MyDroneVelEnv(DirectRLEnv):
             device=self.device,
         )
 
+        # riferimento di velocita' corrente e maschera degli assi attivi
         self._target_vel = torch.zeros(self.num_envs, 4, device=self.device)
         self._target_mask = torch.ones(self.num_envs, 4, device=self.device)
 
+        # timer di permanenza sul riferimento corrente prima del resample
         self._hold_timer = torch.zeros(self.num_envs, device=self.device)
         self._hold_duration = torch.zeros(self.num_envs, device=self.device)
 
+        # stato del curriculum: livello corrente per env e streak di successi consecutivi
         n_livelli = len(self.cfg.curriculum_livelli)
         self._curriculum_level = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._success_streak = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -63,9 +70,11 @@ class MyDroneVelEnv(DirectRLEnv):
 
         self._total_promotions = 0
 
+        # accumulo dell'errore di velocita' nel periodo di hold, per valutare la promozione
         self._err_accum = torch.zeros(self.num_envs, device=self.device)
         self._err_count = torch.zeros(self.num_envs, device=self.device)
 
+        # parametri del curriculum per livello (pesi modalita', durata hold, frazione minima mode3)
         self._cur_pesi_modalita = torch.tensor(
             [liv["pesi_modalita"] for liv in self.cfg.curriculum_livelli], device=self.device
         )
@@ -83,6 +92,7 @@ class MyDroneVelEnv(DirectRLEnv):
 
         self._reset_call_counter = 0
 
+        # accumulatori delle reward e degli errori per asse, azzerati a ogni reset di episodio
         self._episode_sums = {
             "vel_error": torch.zeros(self.num_envs, device=self.device),
             "action_rate": torch.zeros(self.num_envs, device=self.device),
@@ -99,6 +109,7 @@ class MyDroneVelEnv(DirectRLEnv):
 
         self._sample_new_targets(torch.arange(self.num_envs, device=self.device))
 
+    # crea la scena: robot, pavimento (senza collider) e luce
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
 
@@ -113,6 +124,7 @@ class MyDroneVelEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
+    # rimuove il collider dal pavimento visivo (resta solo il piano di riferimento, senza fisica)
     @staticmethod
     def _rimuovi_collider_pavimento(prim_path: str) -> None:
         import omni.usd
@@ -134,6 +146,7 @@ class MyDroneVelEnv(DirectRLEnv):
         print(f"[vel_controller_env] Pavimento visivo senza collisione: rimossi {n_rimossi} "
               f"componenti fisici sotto '{prim_path}'.")
 
+    # riceve le azioni [-1,1] e le converte in spinta verticale e momenti (roll/pitch/yaw)
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self._prev_actions = self._actions.clone()
         self._actions = actions.clone().clamp(-1.0, 1.0)
@@ -141,9 +154,11 @@ class MyDroneVelEnv(DirectRLEnv):
         self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
         self._moment[:, 0, :] = self._moment_scale * self._actions[:, 1:4]
 
+    # applica spinta e momento al corpo del drone
     def _apply_action(self) -> None:
         self.robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
 
+    # costruisce il vettore di osservazione per la policy
     def _get_observations(self) -> dict:
         obs = torch.cat(
             (
@@ -157,12 +172,14 @@ class MyDroneVelEnv(DirectRLEnv):
         )
         return {"policy": obs}
 
+    # fattore corrente del curriculum sulla penalita' di action rate (aumenta gradualmente)
     def _current_action_rate_scale(self) -> float:
         frac = min(1.0, self._control_step_counter / max(1, self.cfg.action_rate_curriculum_steps))
         start = self.cfg.action_rate_reward_scale_start
         end = self.cfg.action_rate_reward_scale_end
         return start + frac * (end - start)
 
+    # calcola la reward per-step come somma dei termini e aggiorna gli accumulatori diagnostici/curriculum
     def _get_rewards(self) -> torch.Tensor:
         lin_vel_b = self.robot.data.root_lin_vel_b
         ang_vel_z = self.robot.data.root_ang_vel_b[:, 2]
@@ -199,11 +216,13 @@ class MyDroneVelEnv(DirectRLEnv):
         self._episode_sums["tilt"] += r_tilt
         self._episode_sums["died"] += r_died
 
+        # errore quadratico per asse (per il logging diagnostico Episode_Metrics/error_*)
         raw_axis_sq_error = torch.square(vel_attuale - self._target_vel)
         axis_names = ("vx", "vy", "vz", "wz")
         for i, name in enumerate(axis_names):
             self._episode_axis_error_sums[name] += raw_axis_sq_error[:, i] * self.step_dt
 
+        # errore medio normalizzato sugli assi attivi, accumulato dopo il transiente per il curriculum
         n_assi_attivi = torch.clamp(self._target_mask.sum(dim=-1), min=1.0)
         vel_error_curriculum = err_sq_norm.sum(dim=-1) / n_assi_attivi
 
@@ -215,6 +234,7 @@ class MyDroneVelEnv(DirectRLEnv):
 
         return reward
 
+    # true se il tilt supera la soglia massima consentita
     def _is_died(self) -> torch.Tensor:
         if not self.cfg.terminate_su_tilt_eccessivo:
             return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -222,6 +242,7 @@ class MyDroneVelEnv(DirectRLEnv):
         tilt_rad = torch.acos(gz)
         return tilt_rad > math.radians(self.cfg.max_tilt_deg)
 
+    # condizioni di terminazione (morte/timeout) e resample del riferimento di velocita' se il hold e' scaduto
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         died = self._is_died()
@@ -238,6 +259,7 @@ class MyDroneVelEnv(DirectRLEnv):
 
         return died, time_out
 
+    # valuta l'errore medio nel periodo di hold appena concluso e promuove al livello successivo se riuscito
     def _valuta_e_promuovi(self, env_ids_scaduti: torch.Tensor) -> None:
         idx = env_ids_scaduti.nonzero(as_tuple=False).squeeze(-1) if env_ids_scaduti.dtype == torch.bool else env_ids_scaduti
         if idx.numel() == 0:
@@ -279,6 +301,7 @@ class MyDroneVelEnv(DirectRLEnv):
         self._err_accum[idx] = 0.0
         self._err_count[idx] = 0.0
 
+    # campiona un nuovo riferimento di velocita' (una tra 5 modalita', pesate per livello di curriculum)
     def _sample_new_targets(self, env_ids: torch.Tensor) -> None:
         if env_ids.numel() == 0:
             return
@@ -292,12 +315,14 @@ class MyDroneVelEnv(DirectRLEnv):
         mask = torch.zeros(n, 4, device=self.device)
         rango = self._vel_range
 
+        # modalita 0: tutti gli assi attivi, valori casuali su tutto il range
         sel = modalita == 0
         if torch.any(sel):
             m = sel.nonzero(as_tuple=False).squeeze(-1)
             target[m] = sample_uniform(-1.0, 1.0, (m.numel(), 4), self.device) * rango
             mask[m] = 1.0
 
+        # modalita 1: sottoinsieme casuale di assi attivi (almeno uno)
         sel = modalita == 1
         if torch.any(sel):
             m = sel.nonzero(as_tuple=False).squeeze(-1)
@@ -313,6 +338,7 @@ class MyDroneVelEnv(DirectRLEnv):
             target[m] = valori * m_mask
             mask[m] = m_mask
 
+        # modalita 2: un solo asse attivo, scelto a caso
         sel = modalita == 2
         if torch.any(sel):
             m = sel.nonzero(as_tuple=False).squeeze(-1)
@@ -324,6 +350,7 @@ class MyDroneVelEnv(DirectRLEnv):
             target[m] = valori * m_mask
             mask[m] = m_mask
 
+        # modalita 3: tutti gli assi attivi, ma con ampiezza minima garantita (niente valori troppo piccoli)
         sel = modalita == 3
         if torch.any(sel):
             m = sel.nonzero(as_tuple=False).squeeze(-1)
@@ -338,6 +365,7 @@ class MyDroneVelEnv(DirectRLEnv):
             target[m] = segno * ampiezza * rango
             mask[m] = 1.0
 
+        # modalita 4: hover, esatto o con piccola correzione casuale su tutti gli assi
         sel = modalita == 4
         if torch.any(sel):
             m = sel.nonzero(as_tuple=False).squeeze(-1)
@@ -351,16 +379,19 @@ class MyDroneVelEnv(DirectRLEnv):
         self._target_vel[env_ids] = target
         self._target_mask[env_ids] = mask
 
+        # durata di permanenza sul riferimento, campionata nel range del livello corrente
         hold_min = self._cur_hold_min[livelli]
         hold_max = self._cur_hold_max[livelli]
         self._hold_duration[env_ids] = hold_min + torch.rand(n, device=self.device) * (hold_max - hold_min)
         self._hold_timer[env_ids] = 0.0
 
+    # a fine episodio: logga reward/metriche/curriculum e resetta gli env indicati
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         env_ids_t = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
 
+        # log dei termini di reward e degli errori per asse, poi azzeramento accumulatori
         if "log" not in self.extras:
             self.extras["log"] = dict()
         for key in self._episode_sums.keys():
@@ -372,6 +403,7 @@ class MyDroneVelEnv(DirectRLEnv):
             self.extras["log"]["Episode_Metrics/error_" + name] = (axis_avg / self.cfg.episode_length_s).item()
             self._episode_axis_error_sums[name][env_ids_t] = 0.0
 
+        # log dello stato del curriculum (livello medio, massimo raggiunto, distribuzione per livello)
         self.extras["log"]["Curriculum/mean_level"] = torch.mean(self._curriculum_level.float()).item()
         self.extras["log"]["Curriculum/max_level_reached"] = torch.max(self._curriculum_level).item()
         level_counts = torch.bincount(self._curriculum_level, minlength=len(self.cfg.curriculum_livelli))
@@ -380,6 +412,7 @@ class MyDroneVelEnv(DirectRLEnv):
             self.extras["log"][f"Curriculum/frac_at_level_{lvl}"] = frac.item()
         self.extras["log"]["Curriculum/total_promotions"] = float(self._total_promotions)
 
+        # stampa periodica di debug (ogni N reset) con il riepilogo delle metriche principali
         self._reset_call_counter += 1
         n_ogni = self.cfg.debug_print_every_n_resets
         if n_ogni and self._reset_call_counter % n_ogni == 0:
@@ -408,6 +441,7 @@ class MyDroneVelEnv(DirectRLEnv):
                 f"wz={self.extras['log']['Episode_Metrics/error_wz']:.4f}"
             )
 
+        # reset fisico del robot e azzeramento dei buffer di stato per gli env indicati
         self.robot.reset(env_ids_t)
         super()._reset_idx(env_ids)
 
@@ -419,6 +453,7 @@ class MyDroneVelEnv(DirectRLEnv):
         joint_pos = self.robot.data.default_joint_pos[env_ids_t]
         joint_vel = self.robot.data.default_joint_vel[env_ids_t]
 
+        # ri-spawn del robot alla posa di default nel proprio env
         default_root_state = self.robot.data.default_root_state[env_ids_t].clone()
         default_root_state[:, :3] += self.scene.env_origins[env_ids_t]
 

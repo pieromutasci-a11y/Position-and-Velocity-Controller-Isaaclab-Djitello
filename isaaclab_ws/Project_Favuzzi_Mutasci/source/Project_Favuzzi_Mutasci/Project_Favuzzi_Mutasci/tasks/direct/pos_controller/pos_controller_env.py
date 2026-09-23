@@ -16,10 +16,12 @@ from isaaclab.utils.math import euler_xyz_from_quat, quat_from_euler_xyz, sample
 from ..drone_physics import apply_drone_inertial_props, log_inertial_props
 from .pos_controller_env_cfg import MyDronePosEnvCfg
 
+# modalita' di generazione dei riferimenti (coda variabile vs target singolo)
 MODE_VARIABILE = 0
 MODE_SINGOLO = 1
 MODE_NAMES = {MODE_VARIABILE: "variabile", MODE_SINGOLO: "singolo"}
 
+# direzioni fisse (dx, dy) usate dalla sequenza canonica avanti/indietro/destra/sinistra
 _CANONICAL_DIRECTIONS = (
     (1.0, 0.0),
     (-1.0, 0.0),
@@ -27,6 +29,7 @@ _CANONICAL_DIRECTIONS = (
     (0.0, 1.0),
 )
 
+# nomi delle componenti dell'obiettivo tenute nello storico per il CSV wandb
 _OBJECTIVE_HISTORY_KEYS = (
     "error_mean",
     "smoothness_mean",
@@ -36,9 +39,11 @@ _OBJECTIVE_HISTORY_KEYS = (
     "composite_target",
 )
 
+# normalizza un angolo nell'intervallo (-pi, pi]
 def wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
     return torch.atan2(torch.sin(angle), torch.cos(angle))
 
+# controllore di posizione: livello esterno che pilota il controllore di velocita' congelato
 class MyDronePosEnv(DirectRLEnv):
     cfg: MyDronePosEnvCfg
 
@@ -49,13 +54,16 @@ class MyDronePosEnv(DirectRLEnv):
         dev = self.device
         n_wp = self.cfg.n_waypoints
 
+        # buffer di azioni/spinta/momento applicati al drone
         self._actions = torch.zeros(N, 4, device=dev)
         self._thrust = torch.zeros(N, 1, 3, device=dev)
         self._moment = torch.zeros(N, 1, 3, device=dev)
 
+        # azioni high-level (riferimenti di velocita') correnti e precedenti
         self._high_level_actions = torch.zeros(N, 4, device=dev)
         self._prev_high_level_actions = torch.zeros(N, 4, device=dev)
 
+        # scala per convertire azioni high-level [-1,1] in riferimenti di velocita'
         self._vel_ref_scale = torch.tensor(
             [
                 self.cfg.target_lin_vel_xy_scale,
@@ -66,6 +74,7 @@ class MyDronePosEnv(DirectRLEnv):
             device=dev,
         )
 
+        # coda di waypoint (posizione + yaw) e relativo stato di avanzamento
         self._wp_pos_queue = torch.zeros(N, n_wp, 3, device=dev)
         self._wp_yaw_queue = torch.zeros(N, n_wp, device=dev)
         self._wp_idx = torch.zeros(N, dtype=torch.long, device=dev)
@@ -73,22 +82,27 @@ class MyDronePosEnv(DirectRLEnv):
         self._advanced_now = torch.zeros(N, dtype=torch.bool, device=dev)
         self._env_arange = torch.arange(N, device=dev)
 
+        # bounding box della stanza per ogni env
         self._room_min = torch.zeros(N, 3, device=dev)
         self._room_max = torch.zeros(N, 3, device=dev)
 
+        # modalita' di riferimento correnti (variabile/singolo, hover, canonica)
         self._reference_mode = torch.zeros(N, dtype=torch.long, device=dev)
         self._is_hover = torch.zeros(N, dtype=torch.bool, device=dev)
         self._is_canonical = torch.zeros(N, dtype=torch.bool, device=dev)
 
+        # maschera DoF (quali assi sono controllabili: full vs uniciclo)
         self._dof_mask = torch.ones(N, 4, device=dev)
         self._dof_mask_set = torch.tensor(self.cfg.dof_mask_set, device=dev, dtype=torch.float)
         self._dof_mask_probs = torch.tensor(self.cfg.dof_mask_probs, device=dev, dtype=torch.float)
 
+        # leaky integrator dell'errore (posizione + yaw)
         self._err_integral = torch.zeros(N, 4, device=dev)
         self._integral_alpha = 1.0
 
         self._physics_step_counter = 0
 
+        # override massa/inerzia (Crazyflie -> Tello) prima di leggere la massa del robot
         applied = apply_drone_inertial_props(self.robot, self.cfg.drone_inertial)
         log_inertial_props("pos_controller_env", applied, self.cfg.drone_inertial)
 
@@ -99,6 +113,7 @@ class MyDronePosEnv(DirectRLEnv):
         self._robot_weight = self._robot_mass * self._gravity_magnitude
         self._max_tilt_rad = math.radians(self.cfg.max_tilt_deg)
 
+        # chiavi dei termini di reward e delle metriche loggate per episodio
         self._reward_keys = [
             "position_approach",
             "position_prec",
@@ -133,6 +148,7 @@ class MyDronePosEnv(DirectRLEnv):
             "yaw_error_abs_max": torch.full((N,), float("-inf"), device=dev),
         }
 
+        # storico in memoria delle componenti dell'obiettivo (per il CSV su wandb)
         self._objective_history: dict[str, list[float]] = {k: [] for k in _OBJECTIVE_HISTORY_KEYS}
 
         self._reset_call_counter = 0
@@ -140,6 +156,7 @@ class MyDronePosEnv(DirectRLEnv):
         self.set_debug_vis(self.cfg.debug_vis)
         self._load_low_level_policy()
 
+        # alpha del leaky integrator, calcolato ora che step_dt e' disponibile
         self._integral_alpha = math.exp(-self.step_dt / self.cfg.integral_tau_s)
         print(
             f"[pos_env] Leaky integrator: tau={self.cfg.integral_tau_s}s, "
@@ -149,6 +166,7 @@ class MyDronePosEnv(DirectRLEnv):
             f"obs_scale={self.cfg.integral_obs_scale})"
         )
 
+        # inizializzazione stanza, modalita' di riferimento, maschera DoF e coda waypoint
         all_ids = torch.arange(N, device=dev)
         self._sample_room(all_ids)
         self._sample_reference_mode(all_ids)
@@ -157,6 +175,7 @@ class MyDronePosEnv(DirectRLEnv):
         _, _, spawn_yaw0 = euler_xyz_from_quat(self.robot.data.root_quat_w[all_ids])
         self._build_queue(all_ids, spawn_pos=spawn_pos0, spawn_yaw=spawn_yaw0)
 
+        # riepilogo di avvio (timing, coda, maschere, pesi reward/obiettivo)
         H = self.cfg.wp_preview_horizon
         print(
             f"[pos_env] step_dt={self.step_dt:.4f}s ({1/self.step_dt:.1f}Hz HL) | "
@@ -186,6 +205,7 @@ class MyDronePosEnv(DirectRLEnv):
             f"obj_w_vy_real={self.cfg.obj_w_vy_real}"
         )
 
+    # carica il controllore di velocita' addestrato (skrl) e lo ricostruisce come rete congelata
     def _load_low_level_policy(self):
         try:
             ckpt = torch.load(self.cfg.low_level_policy_path, map_location=self.device)
@@ -202,6 +222,7 @@ class MyDronePosEnv(DirectRLEnv):
                 raise ValueError("Nessuna chiave 'policy' nel checkpoint del low-level.")
             sd = ckpt["policy"]
 
+            # ricostruisce le dimensioni della rete dai pesi del checkpoint skrl
             trunk_keys = sorted(
                 (k for k in sd if k.startswith("net_container.") and k.endswith(".weight")),
                 key=lambda k: int(k.split(".")[1]),
@@ -226,6 +247,7 @@ class MyDronePosEnv(DirectRLEnv):
             if self._running_mean.numel() != 17 or self._running_var.numel() != 17:
                 raise ValueError(f"state_preprocessor con {self._running_mean.numel()} elementi, attesi 17.")
 
+            # MLP minimale equivalente alla rete skrl (Linear + ELU)
             class LowLevelPolicy(torch.nn.Module):
                 def __init__(self, dims, act=torch.nn.ELU):
                     super().__init__()
@@ -241,6 +263,7 @@ class MyDronePosEnv(DirectRLEnv):
 
             self._low_level_policy = LowLevelPolicy(layer_dims).to(self.device)
 
+            # rimappa i pesi dal formato skrl (net_container/policy_layer) al modulo locale
             new_sd = {}
             lin_idx = [i for i, m in enumerate(self._low_level_policy.net) if isinstance(m, torch.nn.Linear)]
             for orig, dest in zip(trunk_keys, lin_idx[:-1]):
@@ -250,6 +273,7 @@ class MyDronePosEnv(DirectRLEnv):
             new_sd[f"net.{lin_idx[-1]}.weight"] = sd["policy_layer.weight"]
             new_sd[f"net.{lin_idx[-1]}.bias"] = sd["policy_layer.bias"]
 
+            # congela la rete: nessun gradiente, solo inferenza
             self._low_level_policy.load_state_dict(new_sd, strict=True)
             self._low_level_policy.eval()
             for p in self._low_level_policy.parameters():
@@ -261,6 +285,7 @@ class MyDronePosEnv(DirectRLEnv):
             print(f"[pos_env] ERRORE caricamento low-level: {e}")
             raise
 
+    # crea la scena: robot, marker di debug, piano e luce
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self.robot
@@ -280,6 +305,7 @@ class MyDronePosEnv(DirectRLEnv):
         light = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light.func("/World/Light", light)
 
+    # campiona una nuova stanza (bounding box asimmetrico) per gli env indicati
     def _sample_room(self, env_ids: torch.Tensor) -> None:
         if env_ids.numel() == 0:
             return
@@ -292,12 +318,15 @@ class MyDronePosEnv(DirectRLEnv):
         self._room_min[env_ids, 2] = self.cfg.min_z_pos
         self._room_max[env_ids, 2] = u(self.cfg.room_z_max_range)
 
+    # distanza dai 6 muri della stanza (positiva = dentro, negativa = fuori)
     def _clearance(self, pos_env: torch.Tensor) -> torch.Tensor:
         return torch.cat([self._room_max - pos_env, pos_env - self._room_min], dim=-1)
 
+    # true se la posizione e' fuori dalla stanza
     def _is_out_of_bounds(self, pos_env: torch.Tensor) -> torch.Tensor:
         return torch.any(self._clearance(pos_env) < 0.0, dim=-1)
 
+    # campiona un punto dentro la stanza (ristretta di un margine)
     def _sample_in_room(self, env_ids: torch.Tensor, margin: float) -> torch.Tensor:
         n = env_ids.numel()
         rmin = self._room_min[env_ids]
@@ -311,6 +340,7 @@ class MyDronePosEnv(DirectRLEnv):
         r = sample_uniform(0.0, 1.0, (n, 3), device=self.device)
         return lo + r * (hi - lo)
 
+    # campiona la maschera DoF (full vs uniciclo) per gli env indicati
     def _sample_dof_mask(self, env_ids: torch.Tensor) -> None:
         if env_ids.numel() == 0:
             return
@@ -318,6 +348,7 @@ class MyDronePosEnv(DirectRLEnv):
         idx = torch.multinomial(self._dof_mask_probs, n, replacement=True)
         self._dof_mask[env_ids] = self._dof_mask_set[idx]
 
+    # costruisce la coda di waypoint per la sequenza canonica (avanti/indietro/destra/sinistra)
     def _sample_canonical_queue(self, env_ids: torch.Tensor, spawn_pos: torch.Tensor) -> None:
         if env_ids.numel() == 0:
             return
@@ -356,6 +387,7 @@ class MyDronePosEnv(DirectRLEnv):
             self._wp_pos_queue[env_ids, k] = pos
             self._wp_yaw_queue[env_ids, k] = yaw
 
+    # popola l'intera coda di waypoint secondo la modalita' assegnata (variabile/singolo/hover/canonica)
     def _build_queue(
         self,
         env_ids: torch.Tensor,
@@ -404,6 +436,7 @@ class MyDronePosEnv(DirectRLEnv):
         self._hold_timer[env_ids] = 0.0
         self._err_integral[env_ids] = 0.0
 
+    # ritorna posizione e yaw del waypoint corrente per ogni env
     def _current_target(self) -> tuple[torch.Tensor, torch.Tensor]:
         idx = self._wp_idx.clamp(max=self.cfg.n_waypoints - 1)
         return (
@@ -411,6 +444,7 @@ class MyDronePosEnv(DirectRLEnv):
             self._wp_yaw_queue[self._env_arange, idx],
         )
 
+    # costruisce il blocco di preview: 1 feedback (waypoint corrente) + feedforward sui successivi
     def _compute_preview(self, pos_env: torch.Tensor, yaw: torch.Tensor) -> torch.Tensor:
         n_wp = self.cfg.n_waypoints
         H = self.cfg.wp_preview_horizon
@@ -435,6 +469,7 @@ class MyDronePosEnv(DirectRLEnv):
 
         return torch.cat(blocks, dim=-1)
 
+    # aggiorna l'integrale dell'errore e fa avanzare la coda quando il waypoint e' raggiunto
     def _update_waypoint(self) -> None:
         pos_env = self.robot.data.root_pos_w - self._env_origins
         w0_pos, w0_yaw = self._current_target()
@@ -480,6 +515,7 @@ class MyDronePosEnv(DirectRLEnv):
             self._episode_sums["n_targets_reached"][adv] += 1.0
             self._err_integral[adv] = 0.0
 
+    # riceve le azioni high-level (riferimenti di velocita'), applicando la maschera DoF
     def _pre_physics_step(self, actions: torch.Tensor):
         self._update_waypoint()
         self._prev_high_level_actions = self._high_level_actions.clone()
@@ -493,6 +529,7 @@ class MyDronePosEnv(DirectRLEnv):
 
         self._high_level_actions = (actions * action_mask).clone()
 
+    # ogni low_level_decimation step chiama il controllore di velocita' congelato (ZOH) e applica spinta/momento
     def _apply_action(self):
         if self._physics_step_counter % self.cfg.low_level_decimation == 0:
             lin_vel_b = self.robot.data.root_lin_vel_b
@@ -520,6 +557,7 @@ class MyDronePosEnv(DirectRLEnv):
         self.robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
         self._physics_step_counter += 1
 
+    # costruisce il vettore di osservazione per la policy high-level
     def _get_observations(self) -> dict:
         pos_env = self.robot.data.root_pos_w - self._env_origins
         _, _, yaw = euler_xyz_from_quat(self.robot.data.root_quat_w)
@@ -547,18 +585,21 @@ class MyDronePosEnv(DirectRLEnv):
         )
         return {"policy": obs}
 
+    # true se il tilt supera la soglia massima consentita
     def _is_tilt_excessive(self) -> torch.Tensor:
         if not self.cfg.terminate_su_tilt_eccessivo:
             return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         gz = torch.clamp(-self.robot.data.projected_gravity_b[:, 2], -1.0, 1.0)
         return torch.acos(gz) > self._max_tilt_rad
 
+    # condizioni di terminazione episodio: uscita dai limiti/tilt eccessivo (morte) o timeout
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         pos_env = self.robot.data.root_pos_w - self._env_origins
         died = self._is_out_of_bounds(pos_env) | self._is_tilt_excessive()
         return died, time_out
 
+    # calcola la reward per-step come somma dei singoli termini e aggiorna gli accumulatori per episodio
     def _get_rewards(self) -> torch.Tensor:
         pos_env = self.robot.data.root_pos_w - self._env_origins
         w0_pos, w0_yaw = self._current_target()
@@ -570,6 +611,7 @@ class MyDronePosEnv(DirectRLEnv):
         yaw_controllable = self._dof_mask[:, 3] > 0.5
         yaw_err = torch.where(yaw_controllable, yaw_err_abs, torch.zeros_like(yaw_err_abs))
 
+        # avvicinamento al target: termine ad ampio raggio + termine di precisione (piu' stretto)
         position_approach = (
             torch.exp(-self.cfg.reward_exp_beta * dist)
             * self.cfg.rew_scale_position_approach * self.step_dt
@@ -582,6 +624,7 @@ class MyDronePosEnv(DirectRLEnv):
         is_uniciclo = self._dof_mask[:, 1] < 0.5
         uni_off = (~is_uniciclo).float()
 
+        # errore di yaw: pesato con un gate di distanza solo in modalita' uniciclo
         yaw_gate = torch.clamp(
             1.0 - dist / self.cfg.yaw_gate_dist_uniciclo, min=0.0, max=1.0
         )
@@ -595,6 +638,7 @@ class MyDronePosEnv(DirectRLEnv):
             * yaw_weight * uni_off * self.cfg.rew_scale_yaw_prec * self.step_dt
         )
 
+        # regolarizzazione delle velocita' angolari (roll/pitch e yaw, quest'ultima piu' pesante vicino al target)
         ang_vel_xy_sq = torch.sum(torch.square(self.robot.data.root_ang_vel_b[:, :2]), dim=1)
         reg_ang_vel_xy = ang_vel_xy_sq * self.cfg.rew_scale_reg_ang_vel_xy * self.step_dt
 
@@ -605,6 +649,7 @@ class MyDronePosEnv(DirectRLEnv):
         )
         reg_ang_vel_wz = wz_sq * wz_proximity_weight * self.cfg.rew_scale_reg_ang_vel_wz * self.step_dt
 
+        # penalita' su comandi aggressivi (esclude wz per uniciclo)
         cmd_weight_aggressive = self._dof_mask.clone()
         cmd_weight_aggressive[is_uniciclo, 3] = 0.0
         cmd_attivi = self._high_level_actions * cmd_weight_aggressive
@@ -613,6 +658,7 @@ class MyDronePosEnv(DirectRLEnv):
 
         alive = torch.full_like(dist, self.cfg.rew_scale_alive * self.step_dt)
 
+        # smoothness delle azioni (variazione tra step consecutivi)
         smooth_weight = torch.ones(self.num_envs, 4, device=self.device)
         smooth_weight[is_uniciclo, 3] = 1.0
 
@@ -622,6 +668,7 @@ class MyDronePosEnv(DirectRLEnv):
             * self.cfg.rew_scale_action_smoothness * self.step_dt
         )
 
+        # penalita' specifiche dell'uniciclo: retromarcia, vy di riferimento e vy reale
         vx_ref_generated = self._high_level_actions[:, 0]
         reverse_amount = torch.clamp(-vx_ref_generated, min=0.0)
         reverse_vx_penalty = (
@@ -640,6 +687,7 @@ class MyDronePosEnv(DirectRLEnv):
             * self.cfg.rew_scale_vy_real_penalty_uniciclo * self.step_dt
         )
 
+        # frenata in prossimita' del target (uniciclo): penalizza vx/vz residue
         vx_real = self.robot.data.root_lin_vel_b[:, 0]
         vz_real = self.robot.data.root_lin_vel_b[:,2]
         brake_weight = torch.clamp(
@@ -650,6 +698,7 @@ class MyDronePosEnv(DirectRLEnv):
             * self.cfg.rew_scale_approach_brake * self.step_dt
         )
 
+        # penalita' terminali (uscita dai limiti, tilt) e bonus di target raggiunto
         is_oob = self._is_out_of_bounds(pos_env)
         oob_penalty = is_oob.float() * self.cfg.oob_reward
         is_tilt = self._is_tilt_excessive()
@@ -675,6 +724,7 @@ class MyDronePosEnv(DirectRLEnv):
             "tilt_death": tilt_penalty,
         }
 
+        # accumulo metriche per episodio (medie, min/max) usate poi in _reset_idx
         self._episode_sums["position_error_abs"] += dist
         self._episode_sums["yaw_error_abs"] += yaw_err
         self._episode_sums["min_clearance"] += self._clearance(pos_env).min(dim=-1).values
@@ -694,6 +744,7 @@ class MyDronePosEnv(DirectRLEnv):
 
         return torch.sum(torch.stack(list(rewards.values())), dim=0)
 
+    # campiona la modalita' di riferimento (variabile/singolo) e i flag hover/canonica
     def _sample_reference_mode(self, env_ids: torch.Tensor) -> None:
         if env_ids.numel() == 0:
             return
@@ -711,9 +762,11 @@ class MyDronePosEnv(DirectRLEnv):
             torch.rand(n, device=self.device) < self.cfg.prob_canonical_variabile
         )
 
+    # copia dello storico delle componenti dell'obiettivo (usato per il CSV su wandb)
     def get_objective_history(self) -> dict[str, list[float]]:
         return {k: list(v) for k, v in self._objective_history.items()}
 
+    # a fine episodio: logga reward/metriche, calcola l'obiettivo dello sweep e resetta gli env indicati
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self.robot._ALL_INDICES
@@ -722,6 +775,7 @@ class MyDronePosEnv(DirectRLEnv):
 
         extras = dict()
 
+        # penalizza l'errore residuo per gli step non vissuti dagli env terminati anticipatamente
         room_diag = torch.norm(self._room_max[ids] - self._room_min[ids], dim=-1)
         died_mask = self.reset_terminated[ids]
         steps_left = (self.max_episode_length - self.episode_length_buf[ids]).clamp(min=0).float()
@@ -729,12 +783,14 @@ class MyDronePosEnv(DirectRLEnv):
         self._episode_sums["position_error_abs"][ids] += room_diag * fill
         self._episode_sums["yaw_error_abs"][ids] += math.pi * fill
 
+        # snapshot delle metriche diagnostiche prima di azzerare gli accumulatori
         saved_action_smoothness = self._episode_sums["action_smoothness"][ids].clone()
         saved_oscillation_raw = self._episode_sums["action_oscillation_raw"][ids].clone() / self.max_episode_length
         saved_vy_ref_abs = self._episode_sums["uniciclo_vy_ref_abs"][ids].clone() / self.max_episode_length
         saved_vy_real_abs = self._episode_sums["uniciclo_vy_real_abs"][ids].clone() / self.max_episode_length
         saved_reverse_ref = self._episode_sums["uniciclo_reverse_ref"][ids].clone() / self.max_episode_length
 
+        # log dei termini di reward e delle metriche per episodio, poi azzeramento accumulatori
         for k in self._reward_keys:
             extras[f"Reward/{k}"] = torch.mean(self._episode_sums[k][ids]) / self.max_episode_length
 
@@ -752,6 +808,7 @@ class MyDronePosEnv(DirectRLEnv):
             extras[f"Episode_Info/{k}"] = torch.mean(v[ids])
             v[ids] = float("inf") if "_min" in k else float("-inf")
 
+        # log delle dimensioni della stanza e delle frazioni di maschera DoF
         extras["Episode_Info/room_x_pos"] = torch.mean(self._room_max[ids, 0])
         extras["Episode_Info/room_x_neg"] = torch.mean(-self._room_min[ids, 0])
         extras["Episode_Info/room_y_pos"] = torch.mean(self._room_max[ids, 1])
@@ -763,6 +820,7 @@ class MyDronePosEnv(DirectRLEnv):
         extras["DoF_Mask/frac_vz"] = torch.mean(self._dof_mask[ids, 2])
         extras["DoF_Mask/frac_wz"] = torch.mean(self._dof_mask[ids, 3])
 
+        # errore finale (distanza + yaw) rispetto al waypoint corrente a fine episodio
         pos_env = self.robot.data.root_pos_w[ids] - self._env_origins[ids]
         i0 = self._wp_idx[ids].clamp(max=self.cfg.n_waypoints - 1)
         w0_pos = self._wp_pos_queue[ids, i0]
@@ -782,6 +840,7 @@ class MyDronePosEnv(DirectRLEnv):
         combined_error = final_dist + alpha_yaw * final_yaw
         extras["Episode_Termination/combined_error"] = torch.mean(combined_error)
 
+        # obiettivo GLOBALE dello sweep: errore + smoothness su tutti gli env, penalita' uniciclo mascherate
         err_per_env = combined_error
         err_mean = torch.mean(err_per_env)
         smooth_mean = torch.mean(saved_oscillation_raw)
@@ -803,6 +862,7 @@ class MyDronePosEnv(DirectRLEnv):
         extras["Diag/uniciclo_vy_ref_abs_mean"] = vy_ref_uniciclo_mean
         extras["Diag/uniciclo_vy_real_abs_mean"] = vy_real_uniciclo_mean
 
+        # contributi pesati e obiettivo composito loggati su wandb/tensorboard
         error_contrib = self.cfg.obj_w_err * err_mean
         smoothness_contrib = self.cfg.obj_w_smooth * smooth_mean
         reverse_contrib = self.cfg.obj_w_rev * reverse_uniciclo_mean
@@ -820,6 +880,7 @@ class MyDronePosEnv(DirectRLEnv):
         )
         extras["Objective/composite_target"] = composite_target
 
+        # accumula lo storico in memoria (esportato poi come CSV su wandb)
         self._objective_history["error_mean"].append(float(err_mean.item()))
         self._objective_history["smoothness_mean"].append(float(smooth_mean.item()))
         self._objective_history["reverse_uniciclo_mean"].append(float(reverse_uniciclo_mean.item()))
@@ -827,6 +888,7 @@ class MyDronePosEnv(DirectRLEnv):
         self._objective_history["vy_real_uniciclo_mean"].append(float(vy_real_uniciclo_mean.item()))
         self._objective_history["composite_target"].append(float(composite_target.item()))
 
+        # conteggi di terminazione (morte/timeout) e statistiche su modalita' e coda waypoint
         n_died_t = torch.count_nonzero(self.reset_terminated[ids])
         n_to_t = torch.count_nonzero(self.reset_time_outs[ids])
         n_died = int(n_died_t.item())
@@ -853,6 +915,7 @@ class MyDronePosEnv(DirectRLEnv):
 
         self.extras["log"] = extras
 
+        # stampa periodica di debug (ogni N reset) con il riepilogo delle metriche principali
         self._reset_call_counter += 1
         every = self.cfg.debug_print_every_n_resets
         if every and self._reset_call_counter % every == 0:
@@ -903,6 +966,7 @@ class MyDronePosEnv(DirectRLEnv):
                 f"vz={_v('DoF_Mask/frac_vz'):.2f} wz={_v('DoF_Mask/frac_wz'):.2f}"
             )
 
+        # reset fisico del robot e azzeramento dei buffer di stato per gli env indicati
         self.robot.reset(ids)
         super()._reset_idx(env_ids)
 
@@ -923,6 +987,7 @@ class MyDronePosEnv(DirectRLEnv):
         self._sample_reference_mode(ids)
         self._sample_dof_mask(ids)
 
+        # ri-spawn del robot: nuova posa e velocita' nulle
         joint_pos = self.robot.data.default_joint_pos[ids]
         joint_vel = self.robot.data.default_joint_vel[ids]
         root_state = self.robot.data.default_root_state[ids].clone()
@@ -946,12 +1011,15 @@ class MyDronePosEnv(DirectRLEnv):
         self.robot.write_root_velocity_to_sim(root_state[:, 7:], ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, ids)
 
+        # ricostruisce la coda di waypoint per la nuova posa di spawn
         self._build_queue(ids, spawn_pos=spawn_pos_env, spawn_yaw=spawn_yaw)
 
+    # mostra/nasconde i marker di debug (target e stanza)
     def _set_debug_vis_impl(self, debug_vis: bool):
         self._target_marker.set_visibility(debug_vis)
         self._room_marker.set_visibility(debug_vis)
 
+    # aggiorna la posa dei marker di debug (target corrente e bounding box della stanza)
     def _debug_vis_callback(self, event):
         w0_pos, w0_yaw = self._current_target()
         tgt_w = w0_pos + self._env_origins
